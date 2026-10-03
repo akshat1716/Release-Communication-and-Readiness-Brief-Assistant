@@ -1,0 +1,141 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Release {
+  id                String           @id @default(uuid())
+  name              String
+  versionLabel      String
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  currentVersionNum Int              @default(1)
+  versions          ReleaseVersion[]
+}
+
+model ReleaseVersion {
+  id                 String                @id @default(uuid())
+  releaseId          String
+  release            Release               @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+  versionNum         Int
+  packageSnapshot    String                @db.Text // Full JSON snapshot of release package
+  packageHash        String                // SHA-256 hash of package data
+  createdAt          DateTime              @default(now())
+  items              ReleaseItem[]
+  checks             CheckResult[]
+  analysisRuns       AnalysisRun[]
+  statements         Statement[]
+  classifications    AIClassification[]
+  riskLimitations    AIRiskLimitation[]
+  missingInfos       AIMissingInfo[]
+  claimVerifications AIClaimVerification[]
+  finalBriefs        FinalBrief[]
+
+  @@unique([releaseId, versionNum])
+}
+
+model ReleaseItem {
+  id               String         // Stable ID e.g. F1, B2, C1, QA1, L1, M1, U1
+  releaseVersionId String
+  releaseVersion   ReleaseVersion @relation(fields: [releaseVersionId], references: [id], onDelete: Cascade)
+  category         String         // FEATURE, BUGFIX, BEHAVIOUR, QA, LIMITATION, MIGRATION, USER_GROUP
+  title            String
+  description      String         @db.Text
+  metadataJson     String?        @db.Text
+
+  @@id([releaseVersionId, id])
+}
+
+model CheckResult {
+  id               String         @id @default(uuid())
+  releaseVersionId String
+  releaseVersion   ReleaseVersion @relation(fields: [releaseVersionId], references: [id], onDelete: Cascade)
+  ruleId           String         // e.g. CHECK_QA_EMPTY, CHECK_NO_LIMITATIONS
+  name             String
+  status           String         // PASS, FAIL, WARN
+  message          String
+  details          String?        @db.Text
+}
+
+model AnalysisRun {
+  id               String         @id @default(uuid())
+  releaseVersionId String
+  releaseVersion   ReleaseVersion @relation(fields: [releaseVersionId], references: [id], onDelete: Cascade)
+  stepName         String         // STEP_A_CLASSIFY, STEP_B_MISSING_INFO, STEP_C_QA_CLAIMS, STEP_D_SUMMARIES
+  promptVersion    String         @default("v1.0")
+  model            String
+  tokensUsed       Int            @default(0)
+  latencyMs        Int            @default(0)
+  status           String         // PENDING, COMPLETED, FAILED
+  error            String?        @db.Text
+  createdAt        DateTime       @default(now())
+}
+
+model Statement {
+  id               String         @id @default(uuid())
+  releaseVersionId String
+  releaseVersion   ReleaseVersion @relation(fields: [releaseVersionId], references: [id], onDelete: Cascade)
+  analysisRunId    String?
+  audience         String         // INTERNAL, CLIENT
+  text             String         @db.Text // Current text (editable)
+  originalText     String         @db.Text // Preserved original AI text
+  citations        String         // JSON array of item IDs e.g. ["F1", "QA1"]
+  status           String         @default("DRAFT") // DRAFT, EDITED, APPROVED, REJECTED
+  sourceHash       String         // SHA-256 hash of ONLY the cited items' content
+  isStale          Boolean        @default(false)
+  staleReason      String?
+  orderIndex       Int            @default(0)
+}
+
+model AIClassification {
+  id               String         @id @default(uuid())
+  releaseVersionId String
+  releaseVersion   ReleaseVersion @relation(fields: [releaseVersionId], references: [id], onDelete: Cascade)
+  itemId           String         // ID of feature/bugfix/behaviour item
+  impact           String         // BREAKING, USER_VISIBLE, INTERNAL_ONLY, SECURITY, PERFORMANCE
+  rationale        String         @db.Text
+}
+
+model AIRiskLimitation {
+  id               String         @id @default(uuid())
+  releaseVersionId String
+  releaseVersion   ReleaseVersion @relation(fields: [releaseVersionId], references: [id], onDelete: Cascade)
+  text             String         @db.Text
+  source           String         // PACKAGE, AI_IDENTIFIED
+  severity         String         // LOW, MEDIUM, HIGH
+  citations        String         // JSON array of cited IDs
+}
+
+model AIMissingInfo {
+  id               String         @id @default(uuid())
+  releaseVersionId String
+  releaseVersion   ReleaseVersion @relation(fields: [releaseVersionId], references: [id], onDelete: Cascade)
+  category         String         // QA, DEPLOYMENT, MIGRATION, SECURITY, PERFORMANCE
+  description      String         @db.Text
+  suggestion       String         @db.Text
+}
+
+model AIClaimVerification {
+  id               String         @id @default(uuid())
+  releaseVersionId String
+  releaseVersion   ReleaseVersion @relation(fields: [releaseVersionId], references: [id], onDelete: Cascade)
+  itemId           String         // Item ID making claim (e.g. F1)
+  claimText        String         @db.Text
+  status           String         // SUPPORTED, PARTIALLY_SUPPORTED, UNSUPPORTED
+  reason           String         @db.Text
+  qaCitations      String         // JSON array of QA IDs matching claim
+}
+
+model FinalBrief {
+  id               String         @id @default(uuid())
+  releaseId        String
+  releaseVersionId String
+  releaseVersion   ReleaseVersion @relation(fields: [releaseVersionId], references: [id], onDelete: Cascade)
+  contentJson      String         @db.Text // Final formatted markdown/JSON brief payload
+  generatedAt      DateTime       @default(now())
+}
