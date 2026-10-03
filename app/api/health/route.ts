@@ -3,6 +3,8 @@ import { prisma } from '@/lib/db';
 import { isMockMode } from '@/lib/llm';
 import { logStep } from '@/lib/logger';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   const isProd = process.env.NODE_ENV === 'production';
   const isMock = process.env.MOCK_LLM === 'true';

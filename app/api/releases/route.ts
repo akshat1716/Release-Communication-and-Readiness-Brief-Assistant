@@ -5,6 +5,8 @@ import { runDeterministicChecks } from '@/lib/checks';
 import { computeCitedSourceHash } from '@/lib/crypto';
 import { ReleasePackageData } from '@/lib/types/release';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const releases = await prisma.release.findMany({
