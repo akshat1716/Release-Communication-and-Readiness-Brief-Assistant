@@ -6,7 +6,8 @@ A full-stack Next.js web application designed to analyze developer release packa
 
 ## Live Deployment & Architecture Overview
 
-- **Live URL**: `https://release-brief-assistant.vercel.app` (Placeholder for Vercel deployment)
+- **Live URL**: [https://release-brief-assistant.vercel.app](https://release-brief-assistant.vercel.app)
+- **GitHub Repository**: [https://github.com/akshat1716/Release-Communication-and-Readiness-Brief-Assistant](https://github.com/akshat1716/Release-Communication-and-Readiness-Brief-Assistant)
 - **Framework**: Next.js 14+ (App Router, TypeScript)
 - **Styling**: Tailwind CSS + Lucide Icons + Glassmorphism UI
 - **Database**: PostgreSQL (Neon / Supabase) with Prisma ORM

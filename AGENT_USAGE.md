@@ -2,6 +2,9 @@
 
 This document provides a transparent log of tools used, representative prompts, delegated tasks, mistakes made, corrections applied, and verification steps executed during the development of the **Release Communication and Readiness Brief Assistant**.
 
+- **Live URL**: [https://release-brief-assistant.vercel.app](https://release-brief-assistant.vercel.app)
+- **GitHub Repository**: [https://github.com/akshat1716/Release-Communication-and-Readiness-Brief-Assistant](https://github.com/akshat1716/Release-Communication-and-Readiness-Brief-Assistant)
+
 ---
 
 ## 1. Tools & Environment Used
