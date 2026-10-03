@@ -76,12 +76,12 @@ Runs as independent API routes (`maxDuration = 60`) with UI progress tracking:
 
 3. Configure environment variables in `.env`:
    ```ini
-   DATABASE_URL="postgresql://user:pass@ep-sample-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require&pgbouncer=true"
-   DIRECT_URL="postgresql://user:pass@ep-sample.us-east-2.aws.neon.tech/neondb?sslmode=require"
+   DATABASE_URL="postgresql://username:password@localhost:5432/dbname"
+   DIRECT_URL="postgresql://username:password@localhost:5432/dbname"
    LLM_PROVIDER="gemini"
-   LLM_API_KEY="your-gemini-api-key"
+   LLM_API_KEY="your_api_key_here"
    LLM_MODEL="gemini-2.5-flash"
-   MOCK_LLM="true" # Set "true" for offline testing, "false" for live Gemini calls
+   MOCK_LLM="true"
    ```
 
 4. Install dependencies:
