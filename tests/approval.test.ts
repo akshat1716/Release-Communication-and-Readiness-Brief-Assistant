@@ -24,14 +24,14 @@ describe('AI Cannot Approve Hard Rule Policy', () => {
     const originalMock = process.env.MOCK_LLM;
 
     try {
-      process.env.NODE_ENV = 'production';
+      (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
       process.env.MOCK_LLM = 'true';
 
       await expect(runStepD(SAMPLE_RELEASE_PACKAGE)).rejects.toThrow(
         'MOCK_LLM=true or missing LLM_API_KEY is strictly prohibited in production environment'
       );
     } finally {
-      process.env.NODE_ENV = originalEnv;
+      (process.env as Record<string, string | undefined>).NODE_ENV = originalEnv;
       process.env.MOCK_LLM = originalMock;
     }
   });

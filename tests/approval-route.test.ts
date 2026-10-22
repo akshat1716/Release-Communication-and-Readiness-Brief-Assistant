@@ -35,7 +35,8 @@ describe('Comprehensive AI Approval Lock Integration Test', () => {
     const json = await res.json();
     expect(json.success).toBe(true);
 
-    const payload = createManySpy.mock.calls[0][0].data;
+    const callArg = createManySpy.mock.calls[0]?.[0];
+    const payload = Array.isArray(callArg?.data) ? callArg.data : [];
     expect(payload.length).toBeGreaterThan(0);
     for (const stmt of payload) {
       expect(stmt.status).toBe('DRAFT');

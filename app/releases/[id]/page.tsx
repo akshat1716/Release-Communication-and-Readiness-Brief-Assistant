@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import PackageEditor from '@/components/PackageEditor';
 import ChecksTab from '@/components/ChecksTab';
-import AnalysisTab from '@/components/AnalysisTab';
+import AnalysisTab, { StepKey, StepProgressState } from '@/components/AnalysisTab';
 import SummariesTab from '@/components/SummariesTab';
 import CompareTab from '@/components/CompareTab';
 import FinalBriefTab from '@/components/FinalBriefTab';
@@ -28,6 +28,13 @@ import {
   AIClaimVerificationData,
 } from '@/lib/types/release';
 
+const INITIAL_STEPS: StepProgressState[] = [
+  { key: 'step-a', name: 'Step A: User Impact Classifications', status: 'idle' },
+  { key: 'step-b', name: 'Step B: Operational Gap Analysis', status: 'idle' },
+  { key: 'step-c', name: 'Step C: QA Claim Verification', status: 'idle' },
+  { key: 'step-d', name: 'Step D: Audience Summaries & Risks', status: 'idle' },
+];
+
 export default function ReleaseDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -42,7 +49,12 @@ export default function ReleaseDetailPage() {
   const [analyzing, setAnalyzing] = useState<boolean>(false);
   const [currentStep, setCurrentStep] = useState<string>('');
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [checksError, setChecksError] = useState<string | null>(null);
+  const [isReRunningChecks, setIsReRunningChecks] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [stepStates, setStepStates] = useState<StepProgressState[]>(INITIAL_STEPS);
+  const inFlightAbortRef = useRef<AbortController | null>(null);
 
   const [releaseName, setReleaseName] = useState<string>('');
   const [versionLabel, setVersionLabel] = useState<string>('');
@@ -56,6 +68,15 @@ export default function ReleaseDetailPage() {
   const [missingInfos, setMissingInfos] = useState<AIMissingInfoData[]>([]);
   const [verifications, setVerifications] = useState<AIClaimVerificationData[]>([]);
   const [statements, setStatements] = useState<StatementData[]>([]);
+
+  // Abort any in-flight requests on component unmount
+  useEffect(() => {
+    return () => {
+      if (inFlightAbortRef.current) {
+        inFlightAbortRef.current.abort();
+      }
+    };
+  }, []);
 
   const fetchRelease = useCallback(async () => {
     try {
@@ -122,7 +143,6 @@ export default function ReleaseDetailPage() {
     } finally {
       setLoading(false);
     }
-
   }, [releaseId]);
 
   useEffect(() => {
@@ -153,6 +173,8 @@ export default function ReleaseDetailPage() {
 
   const handleReRunChecks = async () => {
     if (!currentVersionId) return;
+    setIsReRunningChecks(true);
+    setChecksError(null);
     try {
       const res = await fetch(`/api/releases/${releaseId}/versions/${currentVersionId}/checks`, {
         method: 'POST',
@@ -160,61 +182,164 @@ export default function ReleaseDetailPage() {
       const data = await res.json();
       if (data.success) {
         setChecks(data.checks);
+      } else {
+        throw new Error(data.error || 'Checks failed to run');
       }
     } catch (err: unknown) {
-      console.error(err);
+      setChecksError(err instanceof Error ? err.message : 'Error running checks');
+    } finally {
+      setIsReRunningChecks(false);
     }
   };
 
-  const handleRunMultiStepAnalysis = async () => {
-    if (!currentVersionId) return;
+  /**
+   * Runs an individual analysis step with execution telemetry and state tracking.
+   */
+  const executeSingleStep = async (
+    stepKey: StepKey,
+    signal: AbortSignal
+  ): Promise<boolean> => {
+    const stepDef = INITIAL_STEPS.find((s) => s.key === stepKey);
+    const stepName = stepDef?.name || stepKey;
+    const startTime = Date.now();
+
+    setStepStates((prev) =>
+      prev.map((s) =>
+        s.key === stepKey
+          ? { ...s, status: 'running', error: undefined }
+          : s
+      )
+    );
+    setCurrentStep(stepName);
+
+    try {
+      const res = await fetch(
+        `/api/releases/${releaseId}/versions/${currentVersionId}/analyze/${stepKey}`,
+        { method: 'POST', signal }
+      );
+      const data = await res.json();
+      const durationMs = Date.now() - startTime;
+
+      if (!res.ok || !data.success) {
+        const errorMsg =
+          typeof data.error === 'object' && data.error?.message
+            ? data.error.message
+            : data.error || `${stepName} failed`;
+
+        setStepStates((prev) =>
+          prev.map((s) =>
+            s.key === stepKey
+              ? { ...s, status: 'failed', durationMs, error: errorMsg }
+              : s
+          )
+        );
+        throw new Error(errorMsg);
+      }
+
+      setStepStates((prev) =>
+        prev.map((s) =>
+          s.key === stepKey
+            ? {
+                ...s,
+                status: 'completed',
+                durationMs,
+                tokensUsed: data.tokensUsed,
+                estimatedCostUsd: data.estimatedCostUsd,
+                error: undefined,
+              }
+            : s
+        )
+      );
+
+      return true;
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return false;
+      }
+      throw err;
+    }
+  };
+
+  /**
+   * Re-runs the entire 4-step workflow from the beginning.
+   */
+  const handleRunWholeWorkflow = async () => {
+    if (!currentVersionId || analyzing) return;
     setAnalyzing(true);
     setAnalysisError(null);
 
+    const controller = new AbortController();
+    inFlightAbortRef.current = controller;
+
+    setStepStates(INITIAL_STEPS);
+
     try {
-      // Step A: Classifications
-      setCurrentStep('Step A: User Impact Classifications');
-      const resA = await fetch(
-        `/api/releases/${releaseId}/versions/${currentVersionId}/analyze/step-a`,
-        { method: 'POST' }
-      );
-      const dataA = await resA.json();
-      if (!dataA.success) throw new Error(dataA.error || 'Step A failed');
-
-      // Step B: Missing Infos
-      setCurrentStep('Step B: Operational Gap Analysis');
-      const resB = await fetch(
-        `/api/releases/${releaseId}/versions/${currentVersionId}/analyze/step-b`,
-        { method: 'POST' }
-      );
-      const dataB = await resB.json();
-      if (!dataB.success) throw new Error(dataB.error || 'Step B failed');
-
-      // Step C: QA Claims
-      setCurrentStep('Step C: QA Claim Verification');
-      const resC = await fetch(
-        `/api/releases/${releaseId}/versions/${currentVersionId}/analyze/step-c`,
-        { method: 'POST' }
-      );
-      const dataC = await resC.json();
-      if (!dataC.success) throw new Error(dataC.error || 'Step C failed');
-
-      // Step D: Audience Summaries & Risks
-      setCurrentStep('Step D: Audience Summaries & Risks');
-      const resD = await fetch(
-        `/api/releases/${releaseId}/versions/${currentVersionId}/analyze/step-d`,
-        { method: 'POST' }
-      );
-      const dataD = await resD.json();
-      if (!dataD.success) throw new Error(dataD.error || 'Step D failed');
+      const stepKeys: StepKey[] = ['step-a', 'step-b', 'step-c', 'step-d'];
+      for (const key of stepKeys) {
+        await executeSingleStep(key, controller.signal);
+      }
 
       await fetchRelease();
       setActiveTab('analysis');
     } catch (err: unknown) {
-      setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
+      setAnalysisError(err instanceof Error ? err.message : 'Analysis pipeline failed');
     } finally {
       setAnalyzing(false);
       setCurrentStep('');
+      inFlightAbortRef.current = null;
+    }
+  };
+
+  /**
+   * Retries ONLY a single failed step without rerunning preceding completed steps.
+   */
+  const handleRetryStep = async (stepKey: StepKey) => {
+    if (!currentVersionId || analyzing) return;
+    setAnalyzing(true);
+    setAnalysisError(null);
+
+    const controller = new AbortController();
+    inFlightAbortRef.current = controller;
+
+    try {
+      await executeSingleStep(stepKey, controller.signal);
+      await fetchRelease();
+    } catch (err: unknown) {
+      setAnalysisError(err instanceof Error ? err.message : `Retry for ${stepKey} failed`);
+    } finally {
+      setAnalyzing(false);
+      setCurrentStep('');
+      inFlightAbortRef.current = null;
+    }
+  };
+
+  /**
+   * Resumes workflow starting from a specific step, skipping completed steps.
+   */
+  const handleResumeFrom = async (startStepKey: StepKey) => {
+    if (!currentVersionId || analyzing) return;
+    setAnalyzing(true);
+    setAnalysisError(null);
+
+    const controller = new AbortController();
+    inFlightAbortRef.current = controller;
+
+    const allKeys: StepKey[] = ['step-a', 'step-b', 'step-c', 'step-d'];
+    const startIndex = allKeys.indexOf(startStepKey);
+    const stepsToRun = startIndex >= 0 ? allKeys.slice(startIndex) : allKeys;
+
+    try {
+      for (const key of stepsToRun) {
+        await executeSingleStep(key, controller.signal);
+      }
+      await fetchRelease();
+      setActiveTab('analysis');
+    } catch (err: unknown) {
+      setAnalysisError(err instanceof Error ? err.message : 'Resume failed');
+    } finally {
+      setAnalyzing(false);
+      setCurrentStep('');
+      inFlightAbortRef.current = null;
     }
   };
 
@@ -268,11 +393,11 @@ export default function ReleaseDetailPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col" aria-busy="true">
         <Header />
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center space-y-3">
-            <Loader2 className="w-8 h-8 text-sky-400 animate-spin mx-auto" />
+            <Loader2 className="w-8 h-8 text-sky-400 animate-spin mx-auto" aria-hidden="true" />
             <p className="text-xs text-slate-400">Loading release details...</p>
           </div>
         </div>
@@ -290,13 +415,14 @@ export default function ReleaseDetailPage() {
           <div className="space-y-1">
             <button
               onClick={() => router.push('/')}
-              className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
+              className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors focus-visible:ring-2 focus-visible:ring-sky-500 rounded"
+              aria-label="Back to Dashboard"
             >
-              <ArrowLeft className="w-3.5 h-3.5" /> Back to Dashboard
+              <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" /> Back to Dashboard
             </button>
 
-            <h1 className="text-xl lg:text-2xl font-extrabold text-white tracking-tight flex items-center gap-3">
-              {releaseName}
+            <h1 className="text-xl lg:text-2xl font-extrabold text-white tracking-tight flex items-center gap-3 flex-wrap">
+              <span>{releaseName}</span>
               <span className="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20">
                 {versionLabel} (v{currentVersionNum})
               </span>
@@ -306,88 +432,108 @@ export default function ReleaseDetailPage() {
           {/* Action Trigger Buttons */}
           <div className="flex items-center gap-2">
             <button
-              onClick={handleRunMultiStepAnalysis}
+              onClick={handleRunWholeWorkflow}
               disabled={analyzing}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/20 disabled:opacity-50 transition-all"
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/20 disabled:opacity-50 transition-all focus-visible:ring-2 focus-visible:ring-indigo-400"
+              aria-label={analyzing ? 'Analysis currently in progress' : 'Run full multi-step AI analysis'}
             >
-              <Sparkles className={`w-4 h-4 ${analyzing ? 'animate-spin' : ''}`} />
-              {analyzing ? 'Analyzing...' : 'Run AI Analysis'}
+              <Sparkles className={`w-4 h-4 ${analyzing ? 'animate-spin' : ''}`} aria-hidden="true" />
+              <span>{analyzing ? 'Analyzing...' : 'Run Full AI Analysis'}</span>
             </button>
           </div>
         </div>
 
         {error && (
-          <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300">
+          <div
+            role="alert"
+            className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300"
+          >
             {error}
           </div>
         )}
 
         {/* 6 Navigation Tabs */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-2 border-b border-slate-800">
+        <div
+          role="tablist"
+          aria-label="Release management sections"
+          className="flex items-center gap-1.5 overflow-x-auto pb-2 border-b border-slate-800"
+        >
           <button
+            role="tab"
+            aria-selected={activeTab === 'package'}
             onClick={() => setActiveTab('package')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-sky-500 ${
               activeTab === 'package'
                 ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
-            <FileText className="w-4 h-4" /> Package Form
+            <FileText className="w-4 h-4" aria-hidden="true" /> Package Form
           </button>
 
           <button
+            role="tab"
+            aria-selected={activeTab === 'checks'}
             onClick={() => setActiveTab('checks')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-sky-500 ${
               activeTab === 'checks'
                 ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
-            <CheckSquare className="w-4 h-4" /> Checks ({checks.length})
+            <CheckSquare className="w-4 h-4" aria-hidden="true" /> Checks ({checks.length})
           </button>
 
           <button
+            role="tab"
+            aria-selected={activeTab === 'analysis'}
             onClick={() => setActiveTab('analysis')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-sky-500 ${
               activeTab === 'analysis'
                 ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
-            <Sparkles className="w-4 h-4" /> AI Analysis
+            <Sparkles className="w-4 h-4" aria-hidden="true" /> AI Analysis
           </button>
 
           <button
+            role="tab"
+            aria-selected={activeTab === 'summaries'}
             onClick={() => setActiveTab('summaries')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-sky-500 ${
               activeTab === 'summaries'
                 ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
-            <MessageSquareQuote className="w-4 h-4" /> Summaries ({statements.length})
+            <MessageSquareQuote className="w-4 h-4" aria-hidden="true" /> Summaries ({statements.length})
           </button>
 
           <button
+            role="tab"
+            aria-selected={activeTab === 'compare'}
             onClick={() => setActiveTab('compare')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-sky-500 ${
               activeTab === 'compare'
                 ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
-            <GitCompare className="w-4 h-4" /> Versions / Compare ({totalVersionsCount})
+            <GitCompare className="w-4 h-4" aria-hidden="true" /> Versions / Compare ({totalVersionsCount})
           </button>
 
           <button
+            role="tab"
+            aria-selected={activeTab === 'brief'}
             onClick={() => setActiveTab('brief')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-emerald-500 ${
               activeTab === 'brief'
                 ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
-            <FileCheck className="w-4 h-4" /> Final Brief
+            <FileCheck className="w-4 h-4" aria-hidden="true" /> Final Brief
           </button>
         </div>
 
@@ -405,6 +551,8 @@ export default function ReleaseDetailPage() {
             <ChecksTab
               checks={checks}
               onReRunChecks={handleReRunChecks}
+              isReRunning={isReRunningChecks}
+              error={checksError}
             />
           )}
 
@@ -413,7 +561,10 @@ export default function ReleaseDetailPage() {
               classifications={classifications}
               missingInfos={missingInfos}
               verifications={verifications}
-              onRunAnalysis={handleRunMultiStepAnalysis}
+              stepStates={stepStates}
+              onRunWholeWorkflow={handleRunWholeWorkflow}
+              onRetryStep={handleRetryStep}
+              onResumeFrom={handleResumeFrom}
               isAnalyzing={analyzing}
               currentStep={currentStep}
               analysisError={analysisError}
