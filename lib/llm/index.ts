@@ -18,6 +18,33 @@ import {
   getMockStepDOutput,
 } from './fixtures';
 import { sanitizeCitations } from './sanitizer';
+import { runLlmJson, RunLlmJsonDependencies, RunLlmJsonResult } from './runner';
+import {
+  serializePackageForPrompt,
+  estimateTokenCount,
+  calculateLlmCost,
+  assertPromptWithinLimits,
+  getLlmTokenConfig,
+  CostEstimateResult,
+  UsageMetrics,
+  SUPPORTS_THINKING_BUDGET,
+} from './tokens';
+import { LlmError, classifyError, LlmErrorCode } from './errors';
+import { defensiveJsonParse } from './parser';
+
+export {
+  runLlmJson,
+  serializePackageForPrompt,
+  estimateTokenCount,
+  calculateLlmCost,
+  assertPromptWithinLimits,
+  getLlmTokenConfig,
+  LlmError,
+  classifyError,
+  defensiveJsonParse,
+  SUPPORTS_THINKING_BUDGET,
+};
+export type { LlmErrorCode, CostEstimateResult, UsageMetrics };
 
 export function isMockMode(): boolean {
   const isExplicitMock = process.env.MOCK_LLM === 'true';
@@ -25,7 +52,7 @@ export function isMockMode(): boolean {
   return isExplicitMock || noApiKey;
 }
 
-function checkProductionMockGuard(): void {
+export function checkProductionMockGuard(): void {
   const isProd = process.env.NODE_ENV === 'production';
   const isMock = process.env.MOCK_LLM === 'true';
   const noApiKey = !process.env.LLM_API_KEY || process.env.LLM_API_KEY.trim() === '';
@@ -40,78 +67,130 @@ function checkProductionMockGuard(): void {
   }
 }
 
-async function callGeminiJson<T>(
+export interface CallGeminiJsonResult<T> {
+  data: T;
+  latencyMs: number;
+  model: string;
+  tokensUsed?: number;
+  estimatedCostUsd?: number;
+  costDetails?: CostEstimateResult;
+  usage?: UsageMetrics;
+}
+
+/**
+ * Public Gemini JSON call wrapper with bounded retry, repair, backoff, and token budgeting.
+ */
+export async function callGeminiJson<T>(
   prompt: string,
   schema: { parse: (val: unknown) => T },
   stepName: string,
-  maxRetries = 2
-): Promise<{ data: T; latencyMs: number; model: string }> {
+  depsOverride?: Partial<RunLlmJsonDependencies>
+): Promise<CallGeminiJsonResult<T>> {
   checkProductionMockGuard();
 
   const apiKey = process.env.LLM_API_KEY || '';
-  const modelName = process.env.LLM_MODEL || 'gemini-2.5-flash';
+  const modelName = process.env.LLM_MODEL || 'gemini-1.5-flash';
 
-  if (!apiKey) {
-    throw new Error('LLM_API_KEY is not configured in environment variables');
+  if (!apiKey && !depsOverride?.generate) {
+    throw new LlmError({
+      code: 'AUTH_ERROR',
+      statusCode: 401,
+      retryable: false,
+      attempts: 0,
+      message: 'LLM_API_KEY is not configured in environment variables',
+    });
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: modelName,
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0.1,
-    },
-  });
+  const defaultGenerate = async (
+    promptText: string,
+    options: { signal?: AbortSignal; maxOutputTokens?: number }
+  ) => {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({
+      model: modelName,
+      generationConfig: {
+        responseMimeType: 'application/json',
+        temperature: 0.1,
+        maxOutputTokens: options.maxOutputTokens,
+      },
+    });
 
-  let lastError: Error | null = null;
-  const startTime = Date.now();
+    // Note: @google/generative-ai generateContent accepts contents and optional requestOptions
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: promptText }] }],
+    });
 
-  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
-    try {
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
-      const parsedJson = JSON.parse(text);
-      const validatedData = schema.parse(parsedJson);
-      const latencyMs = Date.now() - startTime;
+    const response = result.response;
+    return {
+      text: response.text(),
+      usageMetadata: response.usageMetadata,
+    };
+  };
 
-      logStep(`LLM call succeeded for ${stepName}`, {
-        stepName,
-        model: modelName,
-        attempt,
-        latencyMs,
-        success: true,
-      });
+  const runnerDeps: RunLlmJsonDependencies = {
+    generate: depsOverride?.generate ?? defaultGenerate,
+    sleep: depsOverride?.sleep,
+    now: depsOverride?.now,
+    random: depsOverride?.random,
+  };
 
-      return { data: validatedData, latencyMs, model: modelName };
-    } catch (err: unknown) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      logStep(`LLM attempt ${attempt} failed for ${stepName}`, {
-        stepName,
-        model: modelName,
-        attempt,
-        error: lastError.message,
-        success: false,
-      });
-    }
+  try {
+    const runnerRes = await runLlmJson(prompt, schema, stepName, runnerDeps);
+
+    logStep(`LLM call succeeded for ${stepName}`, {
+      stepName,
+      model: modelName,
+      attempts: runnerRes.attempts,
+      latencyMs: runnerRes.latencyMs,
+      tokensUsed: runnerRes.usage.totalTokens,
+      estimatedCostUsd: runnerRes.costEstimate.estimatedCostUsd,
+      success: true,
+    });
+
+    return {
+      data: runnerRes.data,
+      latencyMs: runnerRes.latencyMs,
+      model: modelName,
+      tokensUsed: runnerRes.usage.totalTokens,
+      estimatedCostUsd: runnerRes.costEstimate.estimatedCostUsd,
+      costDetails: runnerRes.costEstimate,
+      usage: runnerRes.usage,
+    };
+  } catch (err: unknown) {
+    const classified = classifyError(err);
+    logStep(`LLM call failed for ${stepName}`, {
+      stepName,
+      model: modelName,
+      code: classified.code,
+      error: classified.message,
+      success: false,
+    });
+    throw err;
   }
-
-  throw new Error(`LLM call failed after ${maxRetries + 1} attempts for ${stepName}: ${lastError?.message}`);
 }
 
 export async function runStepA(
-  packageData: ReleasePackageData
-): Promise<{ data: StepAOutput; latencyMs: number; model: string }> {
+  packageData: ReleasePackageData,
+  depsOverride?: Partial<RunLlmJsonDependencies>
+): Promise<CallGeminiJsonResult<StepAOutput>> {
   checkProductionMockGuard();
 
-  if (isMockMode()) {
-    return { data: getMockStepAOutput(packageData), latencyMs: 50, model: 'mock-fixture' };
+  if (isMockMode() && !depsOverride?.generate) {
+    return {
+      data: getMockStepAOutput(packageData),
+      latencyMs: 50,
+      model: 'mock-fixture',
+      tokensUsed: 350,
+      estimatedCostUsd: 0.0001,
+    };
   }
+
+  const compactPackageJson = serializePackageForPrompt(packageData);
 
   const prompt = `You are a release engineering AI assistant. Analyze the release package and classify each item in features, bugFixes, and changedBehaviours by user impact.
 
 Release Package JSON:
-${JSON.stringify(packageData, null, 2)}
+${compactPackageJson}
 
 Instructions:
 1. For every item in features, bugFixes, and changedBehaviours, provide an object with:
@@ -126,22 +205,31 @@ Return JSON in this format:
   ]
 }`;
 
-  return callGeminiJson(prompt, StepAOutputSchema, 'STEP_A_CLASSIFY');
+  return callGeminiJson(prompt, StepAOutputSchema, 'STEP_A_CLASSIFY', depsOverride);
 }
 
 export async function runStepB(
-  packageData: ReleasePackageData
-): Promise<{ data: StepBOutput; latencyMs: number; model: string }> {
+  packageData: ReleasePackageData,
+  depsOverride?: Partial<RunLlmJsonDependencies>
+): Promise<CallGeminiJsonResult<StepBOutput>> {
   checkProductionMockGuard();
 
-  if (isMockMode()) {
-    return { data: getMockStepBOutput(packageData), latencyMs: 50, model: 'mock-fixture' };
+  if (isMockMode() && !depsOverride?.generate) {
+    return {
+      data: getMockStepBOutput(packageData),
+      latencyMs: 50,
+      model: 'mock-fixture',
+      tokensUsed: 420,
+      estimatedCostUsd: 0.00015,
+    };
   }
+
+  const compactPackageJson = serializePackageForPrompt(packageData);
 
   const prompt = `You are a release communication AI auditor. Analyze the release package for missing release information or operational gaps (e.g. changed behaviour without migration notes, features claiming platform support without QA evidence, missing deployment/rollback notes).
 
 Release Package JSON:
-${JSON.stringify(packageData, null, 2)}
+${compactPackageJson}
 
 Return JSON with "missingInfos" array:
 {
@@ -154,22 +242,31 @@ Return JSON with "missingInfos" array:
   ]
 }`;
 
-  return callGeminiJson(prompt, StepBOutputSchema, 'STEP_B_MISSING_INFO');
+  return callGeminiJson(prompt, StepBOutputSchema, 'STEP_B_MISSING_INFO', depsOverride);
 }
 
 export async function runStepC(
-  packageData: ReleasePackageData
-): Promise<{ data: StepCOutput; latencyMs: number; model: string }> {
+  packageData: ReleasePackageData,
+  depsOverride?: Partial<RunLlmJsonDependencies>
+): Promise<CallGeminiJsonResult<StepCOutput>> {
   checkProductionMockGuard();
 
-  if (isMockMode()) {
-    return { data: getMockStepCOutput(packageData), latencyMs: 50, model: 'mock-fixture' };
+  if (isMockMode() && !depsOverride?.generate) {
+    return {
+      data: getMockStepCOutput(packageData),
+      latencyMs: 50,
+      model: 'mock-fixture',
+      tokensUsed: 480,
+      estimatedCostUsd: 0.0002,
+    };
   }
+
+  const compactPackageJson = serializePackageForPrompt(packageData);
 
   const prompt = `You are a QA evidence auditor. Check every feature, bugfix, or changed behavior claim against the supplied QA evidence entries. Identify claims NOT supported or only partially supported by QA evidence.
 
 Release Package JSON:
-${JSON.stringify(packageData, null, 2)}
+${compactPackageJson}
 
 Return JSON with "verifications" array:
 {
@@ -184,12 +281,13 @@ Return JSON with "verifications" array:
   ]
 }`;
 
-  return callGeminiJson(prompt, StepCOutputSchema, 'STEP_C_QA_CLAIMS');
+  return callGeminiJson(prompt, StepCOutputSchema, 'STEP_C_QA_CLAIMS', depsOverride);
 }
 
 export async function runStepD(
-  packageData: ReleasePackageData
-): Promise<{ data: StepDOutput; latencyMs: number; model: string }> {
+  packageData: ReleasePackageData,
+  depsOverride?: Partial<RunLlmJsonDependencies>
+): Promise<CallGeminiJsonResult<StepDOutput>> {
   checkProductionMockGuard();
 
   const allItems = [
@@ -205,10 +303,15 @@ export async function runStepD(
   let rawOutput: StepDOutput;
   let latencyMs = 50;
   let model = 'mock-fixture';
+  let tokensUsed = 600;
+  let estimatedCostUsd = 0.00025;
+  let costDetails: CostEstimateResult | undefined = undefined;
+  let usage: UsageMetrics | undefined = undefined;
 
-  if (isMockMode()) {
+  if (isMockMode() && !depsOverride?.generate) {
     rawOutput = getMockStepDOutput(packageData);
   } else {
+    const compactPackageJson = serializePackageForPrompt(packageData);
 
     const prompt = `You are a technical documentation AI writer. Draft two audience-specific release summaries based strictly on the supplied release package:
 1. Internal Technical Summary: aimed at engineers and SREs.
@@ -220,7 +323,7 @@ RULES:
 - Also list known risks and limitations labelled by source ("PACKAGE" or "AI_IDENTIFIED").
 
 Release Package JSON:
-${JSON.stringify(packageData, null, 2)}
+${compactPackageJson}
 
 Return JSON:
 {
@@ -235,10 +338,14 @@ Return JSON:
   ]
 }`;
 
-    const res = await callGeminiJson(prompt, StepDOutputSchema, 'STEP_D_SUMMARIES');
+    const res = await callGeminiJson(prompt, StepDOutputSchema, 'STEP_D_SUMMARIES', depsOverride);
     rawOutput = res.data;
     latencyMs = res.latencyMs;
     model = res.model;
+    tokensUsed = res.tokensUsed ?? 0;
+    estimatedCostUsd = res.estimatedCostUsd ?? 0;
+    costDetails = res.costDetails;
+    usage = res.usage;
   }
 
   // Citation Sanitization Step: Strip hallucinated item IDs
@@ -257,5 +364,13 @@ Return JSON:
     })),
   };
 
-  return { data: sanitizedOutput, latencyMs, model };
+  return {
+    data: sanitizedOutput,
+    latencyMs,
+    model,
+    tokensUsed,
+    estimatedCostUsd,
+    costDetails,
+    usage,
+  };
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { runStepD } from '@/lib/llm';
+import { runStepD, classifyError, LlmError } from '@/lib/llm';
 import { logStep } from '@/lib/logger';
 import { computeCitedSourceHash } from '@/lib/crypto';
 import { ReleasePackageData, ReleasePackageItem } from '@/lib/types/release';
@@ -32,7 +32,7 @@ export async function POST(
       ...packageData.affectedUserGroups,
     ];
 
-    const { data, latencyMs, model } = await runStepD(packageData);
+    const { data, latencyMs, model, tokensUsed, estimatedCostUsd, costDetails } = await runStepD(packageData);
 
     // Delete existing statements and risks for this version
     await prisma.statement.deleteMany({
@@ -89,6 +89,7 @@ export async function POST(
         releaseVersionId: versionId,
         stepName: 'STEP_D_SUMMARIES',
         model,
+        tokensUsed: tokensUsed || 0,
         latencyMs,
         status: 'COMPLETED',
       },
@@ -98,6 +99,8 @@ export async function POST(
       versionId,
       model,
       latencyMs,
+      tokensUsed: tokensUsed || 0,
+      estimatedCostUsd: estimatedCostUsd || 0,
       internalCount: internalStmtsData.length,
       clientCount: clientStmtsData.length,
     });
@@ -109,10 +112,32 @@ export async function POST(
       clientStatements: clientStmtsData,
       risksAndLimitations: data.risksAndLimitations,
       latencyMs,
+      tokensUsed: tokensUsed || 0,
+      estimatedCostUsd: estimatedCostUsd || 0,
+      costDetails,
     });
   } catch (error: unknown) {
-    const errMessage = error instanceof Error ? error.message : 'Step D failed';
-    logStep('Step D execution error', { versionId: params.versionId, error: errMessage });
-    return NextResponse.json({ success: false, error: errMessage }, { status: 500 });
+    const classified = classifyError(error);
+    const statusCode = error instanceof LlmError ? error.statusCode : classified.statusCode;
+    const errMessage = error instanceof Error ? error.message : classified.message;
+
+    logStep('Step D execution error', {
+      versionId: params.versionId,
+      error: errMessage,
+      code: classified.code,
+      statusCode,
+    });
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          code: classified.code,
+          message: errMessage,
+          retryable: classified.retryable,
+        },
+      },
+      { status: statusCode }
+    );
   }
 }

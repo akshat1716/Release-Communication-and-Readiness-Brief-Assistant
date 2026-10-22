@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { runStepC } from '@/lib/llm';
+import { runStepC, classifyError, LlmError } from '@/lib/llm';
 import { logStep } from '@/lib/logger';
 import { ReleasePackageData } from '@/lib/types/release';
 
@@ -21,7 +21,7 @@ export async function POST(
     }
 
     const packageData: ReleasePackageData = JSON.parse(version.packageSnapshot);
-    const { data, latencyMs, model } = await runStepC(packageData);
+    const { data, latencyMs, model, tokensUsed, estimatedCostUsd, costDetails } = await runStepC(packageData);
 
     await prisma.aIClaimVerification.deleteMany({
       where: { releaseVersionId: versionId },
@@ -43,6 +43,7 @@ export async function POST(
         releaseVersionId: versionId,
         stepName: 'STEP_C_QA_CLAIMS',
         model,
+        tokensUsed: tokensUsed || 0,
         latencyMs,
         status: 'COMPLETED',
       },
@@ -52,6 +53,8 @@ export async function POST(
       versionId,
       model,
       latencyMs,
+      tokensUsed: tokensUsed || 0,
+      estimatedCostUsd: estimatedCostUsd || 0,
       verificationsCount: data.verifications.length,
     });
 
@@ -60,10 +63,32 @@ export async function POST(
       step: 'STEP_C_QA_CLAIMS',
       verifications: data.verifications,
       latencyMs,
+      tokensUsed: tokensUsed || 0,
+      estimatedCostUsd: estimatedCostUsd || 0,
+      costDetails,
     });
   } catch (error: unknown) {
-    const errMessage = error instanceof Error ? error.message : 'Step C failed';
-    logStep('Step C execution error', { versionId: params.versionId, error: errMessage });
-    return NextResponse.json({ success: false, error: errMessage }, { status: 500 });
+    const classified = classifyError(error);
+    const statusCode = error instanceof LlmError ? error.statusCode : classified.statusCode;
+    const errMessage = error instanceof Error ? error.message : classified.message;
+
+    logStep('Step C execution error', {
+      versionId: params.versionId,
+      error: errMessage,
+      code: classified.code,
+      statusCode,
+    });
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          code: classified.code,
+          message: errMessage,
+          retryable: classified.retryable,
+        },
+      },
+      { status: statusCode }
+    );
   }
 }
