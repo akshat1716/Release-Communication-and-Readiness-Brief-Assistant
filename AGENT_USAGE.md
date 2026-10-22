@@ -15,7 +15,9 @@ This document provides a transparent log of tools used, representative prompts, 
 | `replace_file_content` | File System | Targeted code refactoring and bug fixing |
 | `run_command` | System Execution | Executing `npm install`, `npx prisma generate`, `vitest`, `next build` |
 | `manage_task` | Task Management | Monitoring asynchronous background builds and installations |
-| `Vitest` | Test Framework | Unit and integration testing across 12 test suites (35 tests passing) |
+| `Vitest` | Test Framework | Unit and integration testing across 18 test suites (65 tests passing) |
+| `@testing-library/react` | Frontend Testing | Component test verification for loading, empty, error, and governance states |
+| `happy-dom` | DOM Environment | High-performance DOM simulation for frontend component tests |
 | `Prisma ORM` | Database ORM | Schema management and type generation for PostgreSQL |
 | `Pino` | Logging | Structured JSON logging for application events and LLM steps |
 
@@ -29,11 +31,12 @@ This document provides a transparent log of tools used, representative prompts, 
 2. **Refined Technical Mandates**:
    > *"Use PostgreSQL (Neon) for both local dev and production. No SQLite... Run each AI step as its own API call... Use SHA-256, not MD5... Stale detection: each statement stores a hash of the content of only the items it cites... If MOCK_LLM=true and NODE_ENV=production, fail startup / the health check... Enforce 'AI cannot approve' server-side..."*
 
+3. **Hiring Reviewer Hardening Prompt**:
+   > *"Strengthen AI engineering (visible defensive parsing and schema validation, bounded retry/repair, prompt-size and token-cost controls) and strengthen frontend/UX (visual discipline, safe rendering of AI content, loading/empty/error/responsive states with clear implementation evidence)... Keep all 35 existing tests passing... Never commit to main..."*
+
 ---
 
 ## 3. Important Mistakes, Corrections, & Rejected Suggestions
-
-*(Logged during build in `AGENT_LOG.md`)*
 
 1. **Prisma Provider Assumption**:
    - *Initial Mistake*: Proposed SQLite for local development and PostgreSQL for production.
@@ -47,14 +50,23 @@ This document provides a transparent log of tools used, representative prompts, 
    - *Initial Mistake*: Planned a single monolithic LLM call for all 4 analysis steps.
    - *Correction*: Refactored AI workflow into 4 distinct per-step API endpoints (`step-a`, `step-b`, `step-c`, `step-d`) with `maxDuration = 60` and UI progress tracking to prevent serverless function execution timeouts.
 
-4. **Hashing Algorithm Choice**:
-   - *Initial Mistake*: Proposed MD5 for hashing package snapshots.
-   - *Correction*: Switched to SHA-256 for cryptographic integrity across statement source hash tracking and snapshot versioning.
+4. **Defensive Parsing Strategy**:
+   - *Considered Suggestion*: Regex-based bracket extraction or trailing comma regex cleaner.
+   - *Correction*: Rejected regex bracket extraction and trailing comma "fixing" per explicit prompt directive; strictly implemented strict `JSON.parse` first, falling back only to stripping a single surrounding ```` / ````json code fence, routing any other syntax anomaly directly to the repair prompt path.
+
+5. **Vitest React JSX Transform in DOM Environment**:
+   - *Mistake*: Initially ran Testing Library tests under happy-dom without `@vitejs/plugin-react` configured in `vitest.config.ts`, triggering `ReferenceError: React is not defined`.
+   - *Correction*: Added `@vitejs/plugin-react` to `vitest.config.ts` plugins to ensure automatic JSX transformation across all component test suites.
+
+6. **Thinking Budget SDK Check**:
+   - *Investigation*: Evaluated `@google/generative-ai` v0.21.0 for thinking budget configuration.
+   - *Honest Reporting*: Verified that `GenerationConfig` in v0.21.0 lacks `thinkingConfig`. Explicitly documented that thinking budget is unsupported in the current SDK version rather than making unverified claims.
 
 ---
 
 ## 4. Verification Methods & Quality Controls
 
-- **Unit Test Suite**: 35 focused unit tests executed via Vitest across 12 test suites covering deterministic checks, SHA-256 crypto hashing, citation sanitization, stale statement detection, version diffing, server-side approval enforcement, final brief compilation, pino logger redaction, and health check production guards. All 35 tests passed cleanly (`npm test`).
+- **Unit & Integration Test Suite**: 65 tests executed via Vitest across 18 test suites covering deterministic checks, SHA-256 crypto hashing, citation sanitization, stale statement detection, version diffing, server-side approval enforcement, defensive parsing, exponential backoff, deadline bounds, token limits, usage telemetry, and full component rendering states. All 65 tests passed cleanly (`npm test`).
 - **Production Build Validation**: Next.js production build (`npm run build`) compiled successfully with zero type or lint errors across static and dynamic routes.
 - **Health Check Guard Verification**: Verified `/api/health` returns HTTP 500 when `MOCK_LLM=true` in `NODE_ENV=production`.
+- **Injection Safety Verification**: Verified via automated test `tests/ui-safe-rendering.test.tsx` that `<script>` and `<img>` payloads render strictly as inert plain text without executing.
