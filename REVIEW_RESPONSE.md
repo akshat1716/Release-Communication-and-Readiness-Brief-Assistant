@@ -6,8 +6,8 @@ This document details all improvements made to the **Release Communication & Rea
 
 ## 1. Summary of Changes & Verifications
 
-All work was completed strictly on branch `reviewer-feedback-hardening` without modifying `main`. All 35 pre-existing tests remain intact and green, supplemented by 37 new automated Vitest unit/integration tests and 6 real browser Playwright E2E tests:
-- **Vitest Unit & Integration**: **72 tests across 19 test files (100% passing)**
+All work was completed strictly on branch `reviewer-feedback-hardening` without modifying `main`. All 35 pre-existing tests remain intact and green, supplemented by 42 new automated Vitest unit/integration tests and 6 real browser Playwright E2E tests:
+- **Vitest Unit & Integration**: **77 tests across 20 test files (100% passing)**
 - **Playwright E2E**: **6 responsive & state test suites across 3 viewports (100% passing)**
 
 ### Reviewer Feedback Mapping Table
@@ -24,8 +24,9 @@ All work was completed strictly on branch `reviewer-feedback-hardening` without 
 | **Per-step recovery & runner resilience** | Frontend tracks per-step status (`idle`, `running`, `completed`, `failed`) with execution duration. Failed step shows error message, "Retry Step X" (single step), and "Resume from Step X" (skips completed steps). Prevents double submits and cancels in-flight requests on unmount. | [`components/AnalysisTab.tsx`](components/AnalysisTab.tsx)<br>[`app/releases/[id]/page.tsx`](app/releases/[id]/page.tsx) | `tests/ui-analysis.test.tsx` ("displays error with Retry Step button", "retry invokes only the failed step")<br>`e2e/responsive-and-states.spec.ts` (Test 5: "Step Failure & Recovery") | **VERIFIED** |
 | **Safe rendering of AI content** | Kept all AI text rendered safely through React's native string escaping (no `dangerouslySetInnerHTML`, no HTML execution). Markdown preview renders as pure plain text block with download option. | [`components/SummariesTab.tsx`](components/SummariesTab.tsx)<br>[`components/FinalBriefTab.tsx`](components/FinalBriefTab.tsx) | `tests/ui-safe-rendering.test.tsx` ("renders `<script>` and `<img>` tags as inert text without executing HTML") | **VERIFIED** |
 | **Frontend states (Loading / Empty / Error)** | All tabs (`AnalysisTab`, `ChecksTab`, `SummariesTab`, `FinalBriefTab`) equipped with animated skeleton loaders, contextual empty states, and error banners with retry triggers. | [`components/ChecksTab.tsx`](components/ChecksTab.tsx)<br>[`components/SummariesTab.tsx`](components/SummariesTab.tsx)<br>[`components/FinalBriefTab.tsx`](components/FinalBriefTab.tsx) | `e2e/responsive-and-states.spec.ts` (Tests 1, 2, 3: loading, empty, and 500 error states) | **VERIFIED** |
+| **Mobile layout & compact header (< 640px)** | Compact header (smaller title, single-line truncation with `title` attr, smaller badge, collapsed 1-line governance banner with `aria-expanded` toggle). Horizontally scrollable tab strip with scroll-snap, hidden scrollbars, visible edge fades, active tab auto-scrolled into view, and full keyboard navigation (arrows, Home, End). At 768px+, layout unchanged. Visual quality reviewed from generated screenshots. | [`components/Header.tsx`](components/Header.tsx)<br>[`components/ReleaseTabs.tsx`](components/ReleaseTabs.tsx)<br>[`app/releases/[id]/page.tsx`](app/releases/[id]/page.tsx) | `tests/ui-tabs.test.tsx` (5 tests for keyboard nav & WAI-ARIA)<br>`e2e/responsive-and-states.spec.ts` (Test 4 mobile assertions: active tab inside viewport, edge fade, arrows, header height <= 30%, aria-expanded toggle) | **VERIFIED** |
 | **Real browser responsive layout & overflow check** | Tested at viewports 360px (mobile), 768px (tablet), and 1280px (desktop) via Playwright with fully mocked `/api/*` routes. Asserts `document.documentElement.scrollWidth <= window.innerWidth`, controls visible and unclipped, and tab-focus reachability. | [`e2e/responsive-and-states.spec.ts`](e2e/responsive-and-states.spec.ts) | `playwright test` (6 tests across 3 viewports, zero horizontal overflow) | **VERIFIED** |
-| **Screenshot visual evidence** | Playwright test run captured 14 real PNG screenshots of all documented states at 360px and 1280px viewports into `docs/screenshots/`. Regenerated with `npm run test:e2e`. | [`docs/screenshots/`](docs/screenshots/README.md) | `e2e/responsive-and-states.spec.ts` (`page.screenshot`) | **VERIFIED** |
+| **Screenshot visual evidence** | Playwright test run captured 14 real PNG screenshots of all documented states at 360px and 1280px viewports into `docs/screenshots/`. Regenerated with `npm run test:e2e`. Visual quality reviewed from generated screenshots. | [`docs/screenshots/`](docs/screenshots/README.md) | `e2e/responsive-and-states.spec.ts` (`page.screenshot`) | **VERIFIED** |
 | **Real Gemini API Call (Smoke Script)** | Dedicated standalone smoke script (`scripts/smoke-llm.ts`) reading `LLM_API_KEY` strictly from `process.env`. Never executed during automated testing to protect user secrets and prevent production side-effects. | [`scripts/smoke-llm.ts`](scripts/smoke-llm.ts) | Requires user's personal Google Gemini API key | **NOT VERIFIED** (needs user key) |
 
 ---
@@ -35,15 +36,16 @@ All work was completed strictly on branch `reviewer-feedback-hardening` without 
 ### Vitest Test Suite (Unit & Component Integration)
 
 ```
-Test Files  19 passed (19)
-     Tests  72 passed (72)
-  Duration  2.27s
+Test Files  20 passed (20)
+     Tests  77 passed (77)
+  Duration  2.10s
 ```
 
-All 19 test files pass with 100% success rate:
+All 20 test files pass with 100% success rate:
 - `tests/llm-resilience.test.ts` (17 tests): timeouts, retries, exponential backoff with seeded random, truncated JSON self-repair, repair prompt contents, non-retryable 1-call invariant, deadline clamping, and thoughts token cost tracking.
 - `tests/checks.test.ts` (6 tests): deterministic non-AI readiness checks.
 - `tests/brief.test.ts` (5 tests): brief compilation and governance rules.
+- `tests/ui-tabs.test.tsx` (5 tests): release tabs component WAI-ARIA tablist/tab roles, aria-selected, ArrowRight/Down, ArrowLeft/Up with wrap-around, Home, and End keyboard jumps.
 - `tests/ui-summaries.test.tsx` (5 tests): statements tab UI, editing, approval workflows.
 - `tests/ui-final-brief.test.tsx` (5 tests): governance safeguard blocking, override checkbox, markdown generation.
 - `tests/ui-checks.test.tsx` (4 tests): checks tab skeletons, empty state, retry actions.
@@ -102,7 +104,40 @@ Each test runs across 3 viewports (360px mobile portrait, 768px tablet, 1280px d
 
 ---
 
-## 4. Commands for User to Run
+## 4. Mobile Layout & Responsive Verification (< 640px)
+
+### Problems Identified in Initial 360px Screenshots
+1. **Tab bar clipped**: At 360px width, release tabs scrolled horizontally with no visual edge hints, inner scroller was clipped, and active tabs were not auto-scrolled into view.
+2. **Page header vertical footprint**: Header (title + badge + full desktop governance banner) consumed ~25% of the viewport height at 360px, pushing primary interactive cards below the fold.
+
+### Solutions Implemented
+1. **Compact Mobile Header**:
+   - Title reduced to `text-sm`, with single-line truncation (`truncate max-w-[190px]`) and native `title` attribute for full name accessibility.
+   - Reduced badge size (`text-[10px] font-semibold px-1.5 py-0.5`).
+   - Governance policy banner collapsed into a one-line summary (`<strong>Human review required:</strong> AI drafts require manual approval`) with an accessible expand/collapse button (`aria-expanded`, `aria-controls="mobile-governance-details"`). Full policy text remains fully accessible.
+   - Header height measured at ~68px on 360x740px (~9.2% of viewport height, well below the 30% / 222px ceiling).
+   - At 768px and wider, desktop header is completely unchanged.
+2. **Accessible Scrollable Tab Strip (`ReleaseTabs.tsx`)**:
+   - Single horizontally scrollable strip with scroll-snap (`snap-x snap-mandatory`), hidden scrollbars (`[scrollbar-width:none]`), and active tab auto-scrolled into view via `scrollIntoView({ inline: 'center', block: 'nearest' })`.
+   - Visual edge fade gradient overlays (`data-testid="tab-fade-left"`, `data-testid="tab-fade-right"`, `data-testid="tab-edge-fade"`) indicating clipped tabs to the left/right.
+   - WAI-ARIA tablist semantics (`role="tablist"`, `role="tab"`, `aria-selected`, `aria-controls`).
+   - Keyboard navigation support: ArrowRight/ArrowDown, ArrowLeft/ArrowUp with wrap-around, Home (first tab), End (last tab).
+   - At 768px and wider, desktop layout remains unchanged (`sm:snap-none`, `sm:overflow-x-auto`, no edge fades).
+
+### Tests Proving It
+- **Vitest** ([`tests/ui-tabs.test.tsx`](tests/ui-tabs.test.tsx)): 5 unit tests validating tab rendering, click selection, ArrowRight wrap-around, ArrowLeft wrap-around, and Home/End key jumps.
+- **Playwright E2E** ([`e2e/responsive-and-states.spec.ts`](e2e/responsive-and-states.spec.ts) - Test 4 at 360px):
+  - (a) Active tab is fully inside viewport after selecting each of the 6 tabs.
+  - (b) Tab strip shows visible edge-fade indicator element on inner overflow.
+  - (c) Arrow-key navigation moves selection between tabs and updates `aria-selected`.
+  - (d) Header height at 360px is at most 30% of viewport height (asserted `<= 222px`).
+  - (e) Governance banner expand/collapse button toggles `aria-expanded` and reveals details.
+
+> **Visual Quality Review**: Visual quality was reviewed directly from generated screenshots (`docs/screenshots/*-360.png` and `*-1280.png`) and verified programmatically via DOM geometry and ARIA assertions, rather than an automated guarantee.
+
+---
+
+## 5. Commands for User to Run
 
 ### 1. Run Live Gemini API Smoke Test (Requires your personal key)
 
@@ -119,7 +154,7 @@ LLM_API_KEY="your-gemini-api-key" npm run smoke:llm -- --timeout-test
 ### 3. Re-run Automated Test Suites
 
 ```bash
-npm test          # 72 Vitest tests
+npm test          # 77 Vitest tests (20 test files)
 npm run test:e2e  # 6 Playwright responsive tests
 npm run lint      # ESLint (0 errors, 0 warnings)
 npx tsc --noEmit  # TypeScript compiler check (0 errors)

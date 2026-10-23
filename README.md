@@ -14,7 +14,7 @@ A production-grade, full-stack Next.js web application designed to analyze devel
 - **LLM Integration**: Google Gemini API (`gemini-2.5-flash` with structured outputs via `responseMimeType: "application/json"`)
 - **Logging**: Pino structured JSON logger with credential redaction
 - **Testing**: 
-  - **Vitest**: 72 tests passing across 19 test suites (`npm test`)
+  - **Vitest**: 77 tests passing across 20 test suites (`npm test`)
   - **Playwright E2E**: 6 responsive state tests across 3 viewports (`npm run test:e2e`)
 
 ---
@@ -118,6 +118,11 @@ Real screenshots produced directly by the Playwright run are saved in [`docs/scr
    - `aria-live="polite"` on updating status regions.
    - `aria-busy="true"` on loading containers.
    - Descriptive accessible names on all interactive elements.
+4. **Mobile Layout & Keyboard Navigation (< 640px)**:
+   - **Compact Header**: Truncated title with native `title` tooltip, compact version badge, and collapsed one-line governance rule summary with an accessible expand control (`aria-expanded`, `aria-controls`). At 360px viewport height (740px), the header occupies ~68px (~9.2% of viewport height, strictly under the 30% ceiling), ensuring main release content sits above the fold.
+   - **Accessible Scrollable Tab Strip (`ReleaseTabs.tsx`)**: Horizontally scrollable strip with scroll-snap (`snap-x snap-mandatory`), hidden scrollbars (`[scrollbar-width:none]`), visual edge fade gradients indicating hidden tabs on overflow, and auto-scrolling the active tab into view when selection changes. Full WAI-ARIA roles (`role="tablist"`, `role="tab"`, `aria-selected`) and keyboard arrow navigation (Left/Right/Up/Down with wrap-around, Home/End). Proven by `tests/ui-tabs.test.tsx` (5 tests) and `e2e/responsive-and-states.spec.ts` (Test 4).
+   - **Desktop Layout Unchanged**: At 768px and wider, desktop header and tab bar remain identical to the baseline layout.
+   - *Visual Quality Review*: Visual quality was reviewed directly from generated screenshots (`docs/screenshots/*-360.png` and `*-1280.png`) and verified via automated DOM geometry and ARIA assertions, rather than an automated guarantee.
 
 ---
 
@@ -201,8 +206,8 @@ npm test
 
 Expected Output:
 ```
-Test Files  19 passed (19)
-     Tests  72 passed (72)
+Test Files  20 passed (20)
+     Tests  77 passed (77)
 ```
 
 ### 2. Responsive & State E2E Suite (Playwright)
