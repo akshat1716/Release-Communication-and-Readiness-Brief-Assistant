@@ -199,7 +199,7 @@ export default function AnalysisTab({
                     className="flex-1 py-1.5 px-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-semibold text-center focus-visible:ring-2 focus-visible:ring-sky-400 transition-all"
                     aria-label={`Retry only ${step.name}`}
                   >
-                    Retry {step.key.toUpperCase()}
+                    Retry Step {step.key.replace('step-', '').toUpperCase()}
                   </button>
 
                   <button
@@ -207,7 +207,7 @@ export default function AnalysisTab({
                     className="flex-1 py-1.5 px-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold text-center focus-visible:ring-2 focus-visible:ring-indigo-400 transition-all"
                     aria-label={`Resume workflow starting from ${step.name}`}
                   >
-                    Resume From Here
+                    Resume from Step {step.key.replace('step-', '').toUpperCase()}
                   </button>
                 </div>
               )}

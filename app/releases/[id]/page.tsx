@@ -85,7 +85,11 @@ export default function ReleaseDetailPage() {
       const data = await res.json();
 
       if (!data.success || !data.release) {
-        throw new Error(data.error || 'Release not found');
+        const errorMsg =
+          typeof data.error === 'object' && data.error?.message
+            ? data.error.message
+            : data.error || 'Release not found';
+        throw new Error(errorMsg);
       }
 
       const rel = data.release;
@@ -144,7 +148,9 @@ export default function ReleaseDetailPage() {
       }
       setError(err instanceof Error ? err.message : 'Error fetching release detail');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   }, [releaseId]);
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Plus, Trash2, Sparkles, Save, CheckCircle2, AlertCircle } from 'lucide-react';
 import { ReleasePackageData, ReleasePackageItem, ItemCategory } from '@/lib/types/release';
 import { SAMPLE_RELEASE_PACKAGE } from '@/lib/fixtures/sample-release';
@@ -94,6 +94,22 @@ export default function PackageEditor({ initialData, onSave, isSaving }: Package
 
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  useEffect(() => {
+    if (initialData) {
+      setPkgData({
+        releaseName: initialData.releaseName || '',
+        versionLabel: initialData.versionLabel || '',
+        features: initialData.features || [],
+        bugFixes: initialData.bugFixes || [],
+        changedBehaviours: initialData.changedBehaviours || [],
+        qaSummaries: initialData.qaSummaries || [],
+        knownLimitations: initialData.knownLimitations || [],
+        migrationNotes: initialData.migrationNotes || [],
+        affectedUserGroups: initialData.affectedUserGroups || [],
+      });
+    }
+  }, [initialData]);
+
   const handleLoadSample = () => {
     setPkgData(SAMPLE_RELEASE_PACKAGE);
     setMessage({
@@ -103,7 +119,7 @@ export default function PackageEditor({ initialData, onSave, isSaving }: Package
   };
 
   const getNextStableId = (key: keyof Omit<ReleasePackageData, 'releaseName' | 'versionLabel'>, prefix: string) => {
-    const items = pkgData[key];
+    const items = (pkgData[key] || []) as ReleasePackageItem[];
     const existingNums = items
       .map((i) => {
         const match = i.id.match(new RegExp(`^${prefix}(\\d+)$`, 'i'));
@@ -237,7 +253,7 @@ export default function PackageEditor({ initialData, onSave, isSaving }: Package
       {/* Package Categories Accordion Sections */}
       <div className="space-y-5">
         {CATEGORY_CONFIG.map(({ key, category, prefix, label, placeholderTitle, placeholderDesc }) => {
-          const items = pkgData[key];
+          const items = pkgData[key] || [];
           return (
             <div key={key} className="glass-card p-5 rounded-2xl space-y-3">
               <div className="flex items-center justify-between">
