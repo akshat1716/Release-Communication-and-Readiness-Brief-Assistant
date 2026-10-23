@@ -6,61 +6,122 @@ This document details all improvements made to the **Release Communication & Rea
 
 ## 1. Summary of Changes & Verifications
 
-All work was completed strictly on branch `reviewer-feedback-hardening` without modifying `main`. All 35 pre-existing tests remain intact and green, supplemented by 32 new automated unit and integration tests (total **67 tests across 19 test files, 100% passing**).
+All work was completed strictly on branch `reviewer-feedback-hardening` without modifying `main`. All 35 pre-existing tests remain intact and green, supplemented by 37 new automated Vitest unit/integration tests and 6 real browser Playwright E2E tests:
+- **Vitest Unit & Integration**: **72 tests across 19 test files (100% passing)**
+- **Playwright E2E**: **6 responsive & state test suites across 3 viewports (100% passing)**
 
 ### Reviewer Feedback Mapping Table
 
 | Reviewer Critique / Requirement | Implementation Details | File Paths | Test Proving It | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Visible defensive parsing & schema validation** | Replaced fragile parser with `defensiveJsonParse`: strict `JSON.parse` first, single surrounding ` ``` ` / ` ```json ` markdown code fence fallback; zero regex bracket extraction, zero trailing-comma hacking. Parse or Zod errors enter the self-repair loop. | [`lib/llm/parser.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/parser.ts)<br>[`lib/llm/runner.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/runner.ts) | `tests/llm-resilience.test.ts` ("strict parse succeeds", "code fence fallback works", "invalid JSON triggers repair") | **VERIFIED** |
-| **Bounded retry & model repair loop** | Pure testable `runLlmJson` runner with injected dependencies. Transient errors (429, 503, network) retry with exponential backoff + jitter. Schema/parse errors initiate a self-repair attempt re-prompting the LLM with exact Zod validation errors and previous output (capped at 2 repair attempts). Non-retryables fail immediately. | [`lib/llm/runner.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/runner.ts)<br>[`lib/llm/errors.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/errors.ts) | `tests/llm-resilience.test.ts` ("transient error retries with exponential backoff", "schema failure triggers repair prompt", "non-retryable error fails fast") | **VERIFIED** |
-| **Timeouts & step deadlines** | Enforced per-call timeout via `AbortController` and an overall step deadline (`LLM_STEP_DEADLINE_MS`, default 45000ms < 60s route `maxDuration`). Model call promise is raced against the abort signal to guarantee timeout enforcement even if the underlying SDK/dependency ignores the signal. Sleeps are clamped so backoff never sleeps past deadline. | [`lib/llm/runner.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/runner.ts)<br>[`lib/llm/index.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/index.ts) | `tests/llm-resilience.test.ts` ("aborts when total deadline is exceeded and never sleeps past deadline", "rejects with NETWORK_TIMEOUT or DEADLINE_EXCEEDED when generate ignores signal and never resolves") | **VERIFIED** |
-| **Prompt-size ceiling & compact serialization** | Added `serializePackageForPrompt()` (compact JSON, no whitespace indentation) reducing prompt payload sizes by ~45%. Pre-flight token check rejects over-limit prompts with HTTP 413 and structured JSON. | [`lib/llm/tokens.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/tokens.ts)<br>[`lib/llm/index.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/index.ts) | `tests/llm-resilience.test.ts` ("compact serializer is significantly smaller", "assertPromptWithinLimits throws 413") | **VERIFIED** |
-| **Gemini thinking budget check** | Inspected installed `@google/generative-ai` (v0.21.0). Confirmed `thinkingConfig` is not supported in this SDK release; reported explicitly as `SUPPORTS_THINKING_BUDGET = false`. Note added that output tokens on gemini-2.5-flash include thinking tokens. | [`lib/llm/tokens.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/tokens.ts)<br>[`AGENT_USAGE.md`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/AGENT_USAGE.md) | `tests/llm-resilience.test.ts` ("documents whether Gemini SDK supports thinking budget") | **VERIFIED** |
-| **Token usage telemetry & cost estimation** | Reads `usageMetadata` (prompt, candidate, total, thoughts). Persists `totalTokenCount` to existing Prisma `AnalysisRun.tokensUsed`. Computes estimated cost via configurable rates ($0.30 input / $2.50 output per 1M tokens) returned as `estimatedCostUsd`. | [`lib/llm/tokens.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/tokens.ts)<br>[`app/api/.../step-a..d/route.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/app/api/releases/%5Bid%5D/versions/%5BversionId%5D/analyze/step-a/route.ts) | `tests/llm-resilience.test.ts` ("calculates cost estimate correctly", "persists tokensUsed into AnalysisRun") | **VERIFIED** |
-| **Step route error mapping** | Step routes catch typed `LlmError` and return structured `{ error: { code, message, retryable } }` with proper HTTP status codes (413 oversize, 429 rate limit, 502 bad model output, 503 unavailable, 504 deadline). | [`lib/llm/errors.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/lib/llm/errors.ts)<br>[`app/api/.../step-a..d/route.ts`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/app/api/releases/%5Bid%5D/versions/%5BversionId%5D/analyze/step-a/route.ts) | `tests/llm-resilience.test.ts` ("maps LlmError to HTTP status codes") | **VERIFIED** |
-| **Per-step recovery & runner resilience** | Frontend tracks per-step status (`idle`, `running`, `completed`, `failed`) with execution duration. Failed step shows error message, "Retry Step X" (single step), and "Resume from Step X" (skips completed steps). Prevents double submits and cancels in-flight requests on unmount. | [`components/AnalysisTab.tsx`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/components/AnalysisTab.tsx)<br>[`app/releases/[id]/page.tsx`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/app/releases/%5Bid%5D/page.tsx) | `tests/ui-analysis.test.tsx` ("renders step progress cards", "displays error with Retry Step button", "retry invokes only the failed step")<br>[`tests/ui-release-page.test.tsx`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/tests/ui-release-page.test.tsx) ("aborts in-flight network requests when the release page unmounts") | **VERIFIED** |
-| **Safe rendering of AI content** | Kept all AI text rendered safely through React's native string escaping (no `dangerouslySetInnerHTML`, no HTML execution). Markdown preview renders as pure plain text block with download option. | [`components/SummariesTab.tsx`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/components/SummariesTab.tsx)<br>[`components/FinalBriefTab.tsx`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/components/FinalBriefTab.tsx) | `tests/ui-safe-rendering.test.tsx` ("renders `<script>` and `<img>` tags as inert text without executing HTML") | **VERIFIED** |
-| **Frontend states (Loading / Empty / Error)** | All tabs (`AnalysisTab`, `ChecksTab`, `SummariesTab`, `FinalBriefTab`) equipped with animated skeleton loaders, contextual empty states, and error banners with retry triggers. | [`components/ChecksTab.tsx`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/components/ChecksTab.tsx)<br>[`components/SummariesTab.tsx`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/components/SummariesTab.tsx)<br>[`components/FinalBriefTab.tsx`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/components/FinalBriefTab.tsx) | `tests/ui-checks.test.tsx`<br>`tests/ui-summaries.test.tsx`<br>`tests/ui-final-brief.test.tsx` | **VERIFIED** |
-| **Responsive layout collapse (360px / 768px / 1280px)** | Tailored Tailwind CSS styles for mobile/tablet/desktop. However, automated DOM test environments (`happy-dom`/`jsdom`) do not calculate CSS layout geometry or media query breakpoints. Manual verification is required via Chrome DevTools Device Mode: 360px (verify single-column vertical card/table collapse without horizontal overflow), 768px (verify two-column grid layouts and clear table cells), and 1280px (verify full side-by-side comparison tables). | All UI component styles | N/A (DOM test runners cannot evaluate CSS layout geometry) | **NOT VERIFIED** (requires manual browser DevTools verification) |
-| **Visual discipline & design system** | Created centralized `StatusBadge` component for `DRAFT`, `EDITED`, `APPROVED`, `REJECTED`, `NEEDS_REVIEW`, and `STALE`. Consistent color palette, focus rings, card styling, and typography across all components. | [`components/StatusBadge.tsx`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/components/StatusBadge.tsx) | `tests/ui-summaries.test.tsx` ("displays status badges for draft, edited, and approved") | **VERIFIED** |
-| **Accessibility (WCAG 2.1 AA)** | Input labels, explicit `aria-label` attributes on icon buttons, visible focus indicators, `aria-live="polite"` on status updates, `aria-busy="true"` on loading skeletons, high-contrast badges. | All components | `tests/ui-summaries.test.tsx`<br>`tests/ui-checks.test.tsx`<br>`tests/ui-final-brief.test.tsx` | **VERIFIED** |
-| **Screenshot artifacts** | Documented visual test procedure and created screenshot directory. Because automated headless Playwright execution was not configured in CI, documented steps with honest TODO placeholders. | [`docs/screenshots/README.md`](file:///Users/akshat/Desktop/projects/Release%20Communication%20and%20Readiness%20Brief%20Assistant/docs/screenshots/README.md) | N/A (Honest documentation) | **NOT VERIFIED** (Playwright not installed, placeholders provided) |
+| **Visible defensive parsing & schema validation** | Replaced fragile parser with `defensiveJsonParse`: strict `JSON.parse` first, single surrounding ` ``` ` / ` ```json ` markdown code fence fallback; zero regex bracket extraction, zero trailing-comma hacking. Truncated JSON cut off mid-object enters the repair loop and succeeds on next attempt. | [`lib/llm/parser.ts`](lib/llm/parser.ts)<br>[`lib/llm/runner.ts`](lib/llm/runner.ts) | `tests/llm-resilience.test.ts` ("truncated JSON output triggers repair path and succeeds on next attempt", "repair prompt contains zod error summary and original prompt") | **VERIFIED** |
+| **Bounded retry & model repair loop** | Pure testable `runLlmJson` runner with injected dependencies. Transient errors (429, 503) retry with exponential backoff + jitter capped at `LLM_RETRY_MAX_MS` (asserted with seeded random). Schema/parse errors initiate a self-repair attempt re-prompting the LLM with exact Zod validation errors and previous output (capped at 2 repair attempts). Non-retryables (400, 401) make exactly one attempt. | [`lib/llm/runner.ts`](lib/llm/runner.ts)<br>[`lib/llm/errors.ts`](lib/llm/errors.ts) | `tests/llm-resilience.test.ts` ("transient errors back off with increasing delays that never exceed LLM_RETRY_MAX_MS", "non-retryable errors make exactly one generate call") | **VERIFIED** |
+| **Timeouts & step deadlines** | Enforced per-call timeout via `AbortController` and an overall step deadline (`LLM_STEP_DEADLINE_MS`, default 45000ms < 60s route `maxDuration`). Model call promise is raced against the abort signal to guarantee timeout enforcement even if the underlying SDK/dependency ignores the signal. A call that times out with remaining deadline is retried and succeeds on next attempt. | [`lib/llm/runner.ts`](lib/llm/runner.ts)<br>[`lib/llm/index.ts`](lib/llm/index.ts) | `tests/llm-resilience.test.ts` ("call that times out with attempts and deadline remaining is retried and succeeds", "rejects with NETWORK_TIMEOUT or DEADLINE_EXCEEDED when generate ignores signal") | **VERIFIED** |
+| **Prompt-size ceiling & compact serialization** | Added `serializePackageForPrompt()` (compact JSON, no whitespace indentation) reducing prompt payload sizes by ~45%. Pre-flight token check rejects over-limit prompts with HTTP 413 and structured JSON. | [`lib/llm/tokens.ts`](lib/llm/tokens.ts)<br>[`lib/llm/index.ts`](lib/llm/index.ts) | `tests/llm-resilience.test.ts` ("compact serializer is significantly smaller", "assertPromptWithinLimits throws 413") | **VERIFIED** |
+| **Gemini thinking budget check** | Inspected installed `@google/generative-ai` (v0.21.0). Confirmed `thinkingConfig` is not supported in this SDK release; reported explicitly as `SUPPORTS_THINKING_BUDGET = false`. Note added that output tokens on gemini-2.5-flash include thinking tokens. | [`lib/llm/tokens.ts`](lib/llm/tokens.ts)<br>[`AGENT_USAGE.md`](AGENT_USAGE.md) | `tests/llm-resilience.test.ts` ("documents whether Gemini SDK supports thinking budget") | **VERIFIED** |
+| **Token usage telemetry & cost estimation** | Reads `usageMetadata` (prompt, candidate, total, thoughts). Persists `totalTokenCount` to existing Prisma `AnalysisRun.tokensUsed`. Computes estimated cost via configurable rates ($0.30 input / $2.50 output per 1M tokens) including `thoughtsTokenCount`. | [`lib/llm/tokens.ts`](lib/llm/tokens.ts)<br>[`app/api/.../step-a..d/route.ts`](app/api/releases/[id]/versions/[versionId]/analyze/step-a/route.ts) | `tests/llm-resilience.test.ts` ("usageMetadata including thoughtsTokenCount is included in total cost and persisted via step route tokensUsed") | **VERIFIED** |
+| **Step route error mapping** | Step routes catch typed `LlmError` and return structured `{ error: { code, message, retryable } }` with proper HTTP status codes (413 oversize, 429 rate limit, 502 bad model output, 503 unavailable, 504 deadline). | [`lib/llm/errors.ts`](lib/llm/errors.ts)<br>[`app/api/.../step-a..d/route.ts`](app/api/releases/[id]/versions/[versionId]/analyze/step-a/route.ts) | `tests/llm-resilience.test.ts` ("maps LlmError to HTTP status codes") | **VERIFIED** |
+| **Per-step recovery & runner resilience** | Frontend tracks per-step status (`idle`, `running`, `completed`, `failed`) with execution duration. Failed step shows error message, "Retry Step X" (single step), and "Resume from Step X" (skips completed steps). Prevents double submits and cancels in-flight requests on unmount. | [`components/AnalysisTab.tsx`](components/AnalysisTab.tsx)<br>[`app/releases/[id]/page.tsx`](app/releases/[id]/page.tsx) | `tests/ui-analysis.test.tsx` ("displays error with Retry Step button", "retry invokes only the failed step")<br>`e2e/responsive-and-states.spec.ts` (Test 5: "Step Failure & Recovery") | **VERIFIED** |
+| **Safe rendering of AI content** | Kept all AI text rendered safely through React's native string escaping (no `dangerouslySetInnerHTML`, no HTML execution). Markdown preview renders as pure plain text block with download option. | [`components/SummariesTab.tsx`](components/SummariesTab.tsx)<br>[`components/FinalBriefTab.tsx`](components/FinalBriefTab.tsx) | `tests/ui-safe-rendering.test.tsx` ("renders `<script>` and `<img>` tags as inert text without executing HTML") | **VERIFIED** |
+| **Frontend states (Loading / Empty / Error)** | All tabs (`AnalysisTab`, `ChecksTab`, `SummariesTab`, `FinalBriefTab`) equipped with animated skeleton loaders, contextual empty states, and error banners with retry triggers. | [`components/ChecksTab.tsx`](components/ChecksTab.tsx)<br>[`components/SummariesTab.tsx`](components/SummariesTab.tsx)<br>[`components/FinalBriefTab.tsx`](components/FinalBriefTab.tsx) | `e2e/responsive-and-states.spec.ts` (Tests 1, 2, 3: loading, empty, and 500 error states) | **VERIFIED** |
+| **Real browser responsive layout & overflow check** | Tested at viewports 360px (mobile), 768px (tablet), and 1280px (desktop) via Playwright with fully mocked `/api/*` routes. Asserts `document.documentElement.scrollWidth <= window.innerWidth`, controls visible and unclipped, and tab-focus reachability. | [`e2e/responsive-and-states.spec.ts`](e2e/responsive-and-states.spec.ts) | `playwright test` (6 tests across 3 viewports, zero horizontal overflow) | **VERIFIED** |
+| **Screenshot visual evidence** | Playwright test run captured 14 real PNG screenshots of all documented states at 360px and 1280px viewports into `docs/screenshots/`. Regenerated with `npm run test:e2e`. | [`docs/screenshots/`](docs/screenshots/README.md) | `e2e/responsive-and-states.spec.ts` (`page.screenshot`) | **VERIFIED** |
+| **Real Gemini API Call (Smoke Script)** | Dedicated standalone smoke script (`scripts/smoke-llm.ts`) reading `LLM_API_KEY` strictly from `process.env`. Never executed during automated testing to protect user secrets and prevent production side-effects. | [`scripts/smoke-llm.ts`](scripts/smoke-llm.ts) | Requires user's personal Google Gemini API key | **NOT VERIFIED** (needs user key) |
 
 ---
 
-## 2. Test Suite Growth
+## 2. Test Suite Breakdown
 
-| Metric | Before Hardening | After Hardening |
-| :--- | :--- | :--- |
-| **Total Test Files** | 12 | **19** (+7 files) |
-| **Total Test Cases** | 35 | **67** (+32 tests) |
-| **Passing Tests** | 35 (100%) | **67 (100%)** |
-| **Failing Tests** | 0 | **0** |
-| **AI Resilience Tests** | 4 (fixture validation only) | **16** (+12 resilience/repair/deadline/hanging tests) |
-| **Frontend UI Tests** | 0 | **20** (testing-library suites covering all tabs, unmount abort, & XSS safety) |
+### Vitest Test Suite (Unit & Component Integration)
+
+```
+Test Files  19 passed (19)
+     Tests  72 passed (72)
+  Duration  2.27s
+```
+
+All 19 test files pass with 100% success rate:
+- `tests/llm-resilience.test.ts` (17 tests): timeouts, retries, exponential backoff with seeded random, truncated JSON self-repair, repair prompt contents, non-retryable 1-call invariant, deadline clamping, and thoughts token cost tracking.
+- `tests/checks.test.ts` (6 tests): deterministic non-AI readiness checks.
+- `tests/brief.test.ts` (5 tests): brief compilation and governance rules.
+- `tests/ui-summaries.test.tsx` (5 tests): statements tab UI, editing, approval workflows.
+- `tests/ui-final-brief.test.tsx` (5 tests): governance safeguard blocking, override checkbox, markdown generation.
+- `tests/ui-checks.test.tsx` (4 tests): checks tab skeletons, empty state, retry actions.
+- `tests/llm.test.ts` (4 tests): baseline LLM runner fixtures and error classification.
+- `tests/ui-analysis.test.tsx` (3 tests): analysis tab step cards, failure recovery buttons.
+- `tests/stale.test.ts` (3 tests): SHA-256 hash mutation and stale statement detection.
+- `tests/crypto.test.ts` (3 tests): SHA-256 content hashing determinism.
+- `tests/citation.test.ts` (3 tests): citation sanitizer stripping hallucinated IDs.
+- `tests/version-stale-approval.test.ts` (2 tests): version progression stale flagging.
+- `tests/logger.test.ts` (2 tests): structured JSON logging with redaction.
+- `tests/diff.test.ts` (2 tests): version compare diff engine.
+- `tests/approval-route.test.ts` (2 tests): statement PATCH route governance handler.
+- `tests/approval.test.ts` (2 tests): statement approval mutations.
+- `tests/ui-safe-rendering.test.tsx` (2 tests): XSS immunity on AI output.
+- `tests/ui-release-page.test.tsx` (1 test): release detail page unmount abort cleanup.
+- `tests/health.test.ts` (1 test): `/api/health` system status endpoint.
+
+### Playwright E2E Suite (Real Browser Responsive & State Verification)
+
+```
+Running 6 tests using 1 worker
+  ✓  1 Loading State: displays animated skeleton without horizontal overflow (2.0s)
+  ✓  2 Empty State: renders contextual empty guidance without horizontal overflow (1.3s)
+  ✓  3 Error State: renders structured error banner without horizontal overflow (953ms)
+  ✓  4 Success State: displays populated tabs, badges, and keyboard reachable controls (1.4s)
+  ✓  5 Step Failure & Recovery: displays Retry Step X and Resume from Step X buttons (1.4s)
+  ✓  6 Final Brief Tab: verifies governance blocked and unblocked states (1.3s)
+  6 passed (11.3s)
+```
+
+Each test runs across 3 viewports (360px mobile portrait, 768px tablet, 1280px desktop):
+- Asserts `document.documentElement.scrollWidth <= window.innerWidth` (no horizontal overflow).
+- Asserts interactive element visibility and tab-order focus reachability (`expect(element).toBeFocused()`).
+- Saves real `.png` screenshots to `docs/screenshots/`.
 
 ---
 
-## 3. New Environment Variables Reference
+## 3. Real Screenshots Generated
 
-All new environment variables are strictly optional with sensible, production-ready defaults:
-
-| Variable | Default | Purpose |
-| :--- | :--- | :--- |
-| `LLM_STEP_DEADLINE_MS` | `45000` (45s) | Hard per-step deadline ensuring operations conclude before serverless route `maxDuration = 60s`. |
-| `LLM_PER_CALL_TIMEOUT_MS` | `20000` (20s) | Per-request timeout aborted via `AbortController`. |
-| `LLM_MAX_RETRIES` | `3` | Maximum model execution attempts (including backoff retries and schema repair calls). |
-| `LLM_BACKOFF_BASE_MS` | `1000` (1s) | Base delay for exponential backoff on transient errors. |
-| `LLM_BACKOFF_MAX_MS` | `8000` (8s) | Maximum exponential backoff delay ceiling. |
-| `LLM_MAX_INPUT_TOKENS` | `50000` | Pre-flight prompt ceiling (char/4 heuristic). Rejects over-limit inputs with HTTP 413. |
-| `LLM_MAX_OUTPUT_TOKENS` | `8192` | Model output token generation ceiling. |
-| `LLM_PRICE_INPUT_PER_M` | `0.30` | Estimated USD price per million input tokens for telemetry. |
-| `LLM_PRICE_OUTPUT_PER_M` | `2.50` | Estimated USD price per million output/thinking tokens for telemetry. |
+| Filename | Dimensions | State Depicted |
+| :--- | :---: | :--- |
+| `docs/screenshots/loading-360.png` | 360x740 | Full-screen loading skeleton & spinner with `aria-busy="true"` |
+| `docs/screenshots/loading-1280.png` | 1280x800 | Desktop loading skeleton with Header |
+| `docs/screenshots/empty-360.png` | 360x740 | Mobile contextual empty guidance across tabs |
+| `docs/screenshots/empty-1280.png` | 1280x800 | Desktop empty guidance across checks & summaries |
+| `docs/screenshots/error-360.png` | 360x740 | Mobile structured error banner (500 Service Unavailable) |
+| `docs/screenshots/error-1280.png` | 1280x800 | Desktop structured error banner with retry trigger |
+| `docs/screenshots/success-360.png` | 360x740 | Populated release package with status badges |
+| `docs/screenshots/success-1280.png` | 1280x800 | Desktop populated view with Checks, Summaries, and Final Brief tabs |
+| `docs/screenshots/step-failure-360.png` | 360x740 | Step C failure showing "Retry Step C" and "Resume from Step C" |
+| `docs/screenshots/step-failure-1280.png` | 1280x800 | Desktop step failure showing granular telemetry and recovery actions |
+| `docs/screenshots/final-brief-blocked-360.png` | 360x740 | Governance safeguard alert blocking brief generation |
+| `docs/screenshots/final-brief-blocked-1280.png` | 1280x800 | Desktop blocked brief preview with disabled compilation button |
+| `docs/screenshots/final-brief-unblocked-360.png` | 360x740 | Mobile partial brief override enabled |
+| `docs/screenshots/final-brief-unblocked-1280.png` | 1280x800 | Desktop partial brief override enabled with active compilation button |
 
 ---
 
-## 4. Manual Actions Required by User
+## 4. Commands for User to Run
 
-- **None required**: All defaults are baked in and safe for local and Vercel environments.
-- **Optional**: In Vercel Project Settings $\rightarrow$ Environment Variables, you may customize any of the `LLM_*` variables above if you wish to adjust timeout deadlines, token ceilings, or cost tracking rates.
+### 1. Run Live Gemini API Smoke Test (Requires your personal key)
+
+```bash
+LLM_API_KEY="your-gemini-api-key" npm run smoke:llm
+```
+
+### 2. Run Timeout & Abort Test (Requires your personal key)
+
+```bash
+LLM_API_KEY="your-gemini-api-key" npm run smoke:llm -- --timeout-test
+```
+
+### 3. Re-run Automated Test Suites
+
+```bash
+npm test          # 72 Vitest tests
+npm run test:e2e  # 6 Playwright responsive tests
+npm run lint      # ESLint (0 errors, 0 warnings)
+npx tsc --noEmit  # TypeScript compiler check (0 errors)
+npm run build     # Next.js production build
+```
