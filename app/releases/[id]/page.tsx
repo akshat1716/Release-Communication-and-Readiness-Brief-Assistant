@@ -78,10 +78,10 @@ export default function ReleaseDetailPage() {
     };
   }, []);
 
-  const fetchRelease = useCallback(async () => {
+  const fetchRelease = useCallback(async (signal?: AbortSignal) => {
     try {
       setLoading(true);
-      const res = await fetch(`/api/releases/${releaseId}`);
+      const res = await fetch(`/api/releases/${releaseId}`, { signal });
       const data = await res.json();
 
       if (!data.success || !data.release) {
@@ -139,6 +139,9 @@ export default function ReleaseDetailPage() {
         );
       }
     } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return; // Component unmounted, ignore abort cleanly
+      }
       setError(err instanceof Error ? err.message : 'Error fetching release detail');
     } finally {
       setLoading(false);
@@ -146,7 +149,16 @@ export default function ReleaseDetailPage() {
   }, [releaseId]);
 
   useEffect(() => {
-    fetchRelease();
+    const controller = new AbortController();
+    inFlightAbortRef.current = controller;
+    fetchRelease(controller.signal);
+
+    return () => {
+      controller.abort();
+      if (inFlightAbortRef.current) {
+        inFlightAbortRef.current.abort();
+      }
+    };
   }, [fetchRelease]);
 
   const handleSavePackageVersion = async (newPkgData: ReleasePackageData) => {

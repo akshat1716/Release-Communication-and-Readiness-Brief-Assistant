@@ -251,4 +251,43 @@ describe('AI Engineering Resilience: Defensive Parsing, Retry/Repair & Token Bou
       vi.restoreAllMocks();
     }
   });
+
+  it('rejects with NETWORK_TIMEOUT or DEADLINE_EXCEEDED when generate ignores signal and never resolves', async () => {
+    vi.useFakeTimers();
+    try {
+      let currentTime = 1000;
+      // generate ignores signal and returns a hanging promise
+      const hangingGenerate = vi.fn().mockImplementation(() => new Promise(() => {}));
+
+      const runnerPromise = runLlmJson(
+        'test prompt',
+        SimpleSchema,
+        'STEP_HANGING',
+        {
+          generate: hangingGenerate,
+          sleep: async (ms) => {
+            currentTime += ms;
+            await vi.advanceTimersByTimeAsync(ms);
+          },
+          now: () => currentTime,
+        },
+        {
+          maxAttempts: 1,
+          callTimeoutMs: 1000,
+          stepDeadlineMs: 5000,
+        }
+      );
+
+      const assertion = expect(runnerPromise).rejects.toMatchObject({
+        code: expect.stringMatching(/NETWORK_TIMEOUT|DEADLINE_EXCEEDED/),
+      });
+
+      currentTime += 1000;
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

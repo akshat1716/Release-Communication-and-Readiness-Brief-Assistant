@@ -89,7 +89,7 @@ export async function callGeminiJson<T>(
   checkProductionMockGuard();
 
   const apiKey = process.env.LLM_API_KEY || '';
-  const modelName = process.env.LLM_MODEL || 'gemini-1.5-flash';
+  const modelName = process.env.LLM_MODEL || 'gemini-2.5-flash';
 
   if (!apiKey && !depsOverride?.generate) {
     throw new LlmError({
@@ -115,10 +115,13 @@ export async function callGeminiJson<T>(
       },
     });
 
-    // Note: @google/generative-ai generateContent accepts contents and optional requestOptions
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: promptText }] }],
-    });
+    // Pass signal to model.generateContent in requestOptions
+    const result = await model.generateContent(
+      {
+        contents: [{ role: 'user', parts: [{ text: promptText }] }],
+      },
+      { signal: options.signal }
+    );
 
     const response = result.response;
     return {

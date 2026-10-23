@@ -137,22 +137,60 @@ export async function runLlmJson<T>(
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let callTimedOut = false;
 
+    const clearCallTimer = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    };
+
     try {
       timeoutId = setTimeout(() => {
         callTimedOut = true;
         abortController.abort();
       }, effectiveCallTimeout);
 
-      // 4. Generate content with signal and token bounds
-      const response = await deps.generate(currentPrompt, {
+      // 4. Generate content with signal and token bounds, racing against the abort signal
+      const generatePromise = deps.generate(currentPrompt, {
         signal: abortController.signal,
         maxOutputTokens,
       });
 
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
-      }
+      const response = await new Promise<GenerateResponseLike>((resolve, reject) => {
+        let settled = false;
+
+        const onAbort = () => {
+          if (settled) return;
+          settled = true;
+          abortController.signal.removeEventListener('abort', onAbort);
+          const abortError = new Error('The operation was aborted');
+          abortError.name = 'AbortError';
+          reject(abortError);
+        };
+
+        if (abortController.signal.aborted) {
+          onAbort();
+          return;
+        }
+
+        abortController.signal.addEventListener('abort', onAbort);
+
+        generatePromise
+          .then((res) => {
+            if (settled) return;
+            settled = true;
+            abortController.signal.removeEventListener('abort', onAbort);
+            resolve(res);
+          })
+          .catch((err) => {
+            if (settled) return;
+            settled = true;
+            abortController.signal.removeEventListener('abort', onAbort);
+            reject(err);
+          });
+      });
+
+      clearCallTimer();
 
       // 5. Defensive JSON Parsing
       const parsedJson = defensiveJsonParse(response.text);
@@ -191,17 +229,23 @@ export async function runLlmJson<T>(
         costEstimate,
       };
     } catch (err: unknown) {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
-      }
+      clearCallTimer();
 
       lastError = err;
 
       // Handle call timeout specifically
       if (callTimedOut || (err instanceof Error && err.name === 'AbortError')) {
         const remainingAfterTimeout = deadline - now();
-        if (remainingAfterTimeout <= 0 || attempt >= maxAttempts) {
+        if (remainingAfterTimeout <= 0) {
+          throw new LlmError({
+            code: 'DEADLINE_EXCEEDED',
+            statusCode: 504,
+            retryable: false,
+            attempts: attempt,
+            message: `Step '${stepName}' exceeded total execution deadline of ${stepDeadlineMs}ms.`,
+          });
+        }
+        if (attempt >= maxAttempts) {
           throw new LlmError({
             code: 'NETWORK_TIMEOUT',
             statusCode: 504,

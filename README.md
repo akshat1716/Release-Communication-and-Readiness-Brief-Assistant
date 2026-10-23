@@ -76,7 +76,7 @@ The AI engineering layer ([`lib/llm/`](file:///Users/akshat/Desktop/projects/Rel
    - `serializePackageForPrompt()`: Formats compact JSON (no indentation), saving ~20-25% tokens per prompt compared to pretty-printing.
    - Pre-flight token estimation (`characters / 4`) enforces `LLM_MAX_INPUT_TOKENS` (default 50,000), rejecting oversized payloads with HTTP 413.
    - Limits response length via `LLM_MAX_OUTPUT_TOKENS` (default 8,192).
-   - *Note on Thinking Budget*: Tested against `@google/generative-ai` v0.21.0. This SDK version does not expose `thinkingConfig` in `GenerationConfig`; thinking budget is disabled and reported as unsupported in this SDK version.
+   - *Note on Thinking Budget & Output Tokens*: On `gemini-2.5-flash`, `maxOutputTokens` may include model thinking tokens as well as visible output tokens. SDK 0.21.0 does not expose a `thinkingConfig` setting (no thinking-budget configuration available); thinking tokens are counted and billed as output tokens.
 5. **Usage Telemetry & Cost Telemetry**:
    - Reads `result.response.usageMetadata` (`promptTokenCount`, `candidatesTokenCount`, `totalTokenCount`, `thoughtsTokenCount`).
    - Persists actual token count into Prisma `AnalysisRun.tokensUsed`.
@@ -105,8 +105,12 @@ The AI engineering layer ([`lib/llm/`](file:///Users/akshat/Desktop/projects/Rel
    - `aria-live="polite"` on updating status regions.
    - `aria-busy="true"` on loading containers.
    - Descriptive accessible names on all icon buttons (`aria-label`, `title`).
-5. **Responsive Collapse**:
-   - Statement governance cards, diff comparison tables, and progress badges collapse cleanly under 640px mobile viewports (tested at 360px, 768px, and 1280px).
+5. **Responsive Collapse [NOT VERIFIED in automated tests]**:
+   - Automated DOM environments (`happy-dom`/`jsdom`) do not calculate CSS layout, geometry, or media queries. Responsive layout behavior must be verified manually in a browser:
+     - Open Chrome DevTools Device Mode (`Cmd+Option+I` / `Ctrl+Shift+I` -> Toggle Device Toolbar).
+     - **360px** (mobile portrait): Verify statement governance cards, diff compare columns, and analysis step cards stack vertically without horizontal scrollbars.
+     - **768px** (tablet portrait): Verify two-column grid layouts and clear table readability.
+     - **1280px** (desktop): Verify full side-by-side comparison tables and expansive final brief preview.
 
 ---
 
@@ -118,7 +122,7 @@ The AI engineering layer ([`lib/llm/`](file:///Users/akshat/Desktop/projects/Rel
 | `DIRECT_URL` | *Required* | Neon direct connection string for Prisma migrations. |
 | `LLM_PROVIDER` | `gemini` | LLM provider identifier. |
 | `LLM_API_KEY` | *Required for live* | Google AI Studio Gemini API key. |
-| `LLM_MODEL` | `gemini-1.5-flash` | Gemini model name. |
+| `LLM_MODEL` | `gemini-2.5-flash` | Gemini model name. |
 | `MOCK_LLM` | `false` | When `true`, uses offline fixtures for tests and offline development. |
 | `LLM_MAX_INPUT_TOKENS` | `50000` | Pre-flight input ceiling before rejecting with HTTP 413. |
 | `LLM_MAX_OUTPUT_TOKENS` | `8192` | Max completion tokens requested from model. |
@@ -156,7 +160,7 @@ The AI engineering layer ([`lib/llm/`](file:///Users/akshat/Desktop/projects/Rel
    DIRECT_URL="postgresql://user:pass@ep-sample.us-east-2.aws.neon.tech/neondb?sslmode=require"
    LLM_PROVIDER="gemini"
    LLM_API_KEY="your-gemini-api-key"
-   LLM_MODEL="gemini-1.5-flash"
+   LLM_MODEL="gemini-2.5-flash"
    MOCK_LLM="true" # Set "true" for offline testing, "false" for live Gemini calls
    ```
 
@@ -188,8 +192,8 @@ npm test
 
 Expected Output:
 ```
-Test Files  18 passed (18)
-     Tests  65 passed (65)
+Test Files  19 passed (19)
+     Tests  67 passed (67)
 ```
 
 ---
@@ -208,7 +212,7 @@ Test Files  18 passed (18)
    - `DIRECT_URL`: Your Neon Direct connection string.
    - `LLM_PROVIDER`: `gemini`
    - `LLM_API_KEY`: Your Google Gemini API Key.
-   - `LLM_MODEL`: `gemini-1.5-flash`
+   - `LLM_MODEL`: `gemini-2.5-flash`
    - `MOCK_LLM`: `false` (*IMPORTANT: Setting MOCK_LLM=true in production will fail startup & /api/health*).
 3. Set Build Command: `npm run build`
 4. Deploy application.
