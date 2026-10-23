@@ -246,6 +246,60 @@ test.describe('Responsive Layout & State Verification (Playwright Mocked Network
 
       await expect(page.locator('text=Payment Processing Service v2.4.0')).toBeVisible({ timeout: 10000 });
 
+      // Mobile layout specific assertions at 360px
+      if (vp.name === '360') {
+        // (d) Header height at 360px is at most 30% of viewport height (740 * 0.3 = 222px)
+        const header = page.locator('header');
+        const headerBox = await header.boundingBox();
+        expect(headerBox).not.toBeNull();
+        expect(headerBox!.height).toBeLessThanOrEqual(vp.height * 0.3);
+
+        // (e) Governance banner expand/collapse toggling with aria-expanded
+        const governanceBtn = page.locator('header button[aria-expanded]');
+        await expect(governanceBtn).toBeVisible();
+        await expect(governanceBtn).toHaveAttribute('aria-expanded', 'false');
+        await governanceBtn.click();
+        await expect(governanceBtn).toHaveAttribute('aria-expanded', 'true');
+        await expect(page.locator('#mobile-governance-details')).toBeVisible();
+        await governanceBtn.click();
+        await expect(governanceBtn).toHaveAttribute('aria-expanded', 'false');
+        await expect(page.locator('#mobile-governance-details')).not.toBeVisible();
+
+        // (b) Tab strip either has no inner overflow or shows the edge-fade indicator element
+        const hasInnerOverflow = await page.evaluate(() => {
+          const tablist = document.querySelector('[role="tablist"]');
+          return tablist ? tablist.scrollWidth > tablist.clientWidth : false;
+        });
+        if (hasInnerOverflow) {
+          const edgeFade = page.locator('[data-testid="tab-fade-right"], [data-testid="tab-edge-fade"]').first();
+          await expect(edgeFade).toBeVisible();
+        }
+
+        // (c) Arrow-key navigation moves selection between tabs and updates aria-selected
+        const packageTab = page.locator('button[role="tab"]:has-text("Package Form")');
+        await packageTab.focus();
+        await expect(packageTab).toBeFocused();
+        await page.keyboard.press('ArrowRight');
+        const checksTab = page.locator('button[role="tab"]:has-text("Checks")');
+        await expect(checksTab).toHaveAttribute('aria-selected', 'true');
+        await expect(packageTab).toHaveAttribute('aria-selected', 'false');
+        await page.keyboard.press('ArrowLeft');
+        await expect(packageTab).toHaveAttribute('aria-selected', 'true');
+
+        // (a) Active tab is fully inside the viewport after selecting each tab
+        const tabNames = ['Package Form', 'Checks', 'AI Analysis', 'Summaries', 'Versions', 'Final Brief'];
+        for (const name of tabNames) {
+          const tabBtn = page.locator(`button[role="tab"]:has-text("${name}")`);
+          await tabBtn.click();
+          await expect(tabBtn).toHaveAttribute('aria-selected', 'true');
+          await page.waitForTimeout(300);
+          const box = await tabBtn.boundingBox();
+          expect(box).not.toBeNull();
+          expect(box!.x).toBeGreaterThanOrEqual(-2);
+          expect(box!.x + box!.width).toBeLessThanOrEqual(vp.width + 2);
+        }
+      }
+
       // Verify Readiness Checks tab
       await page.click('button[role="tab"]:has-text("Checks")');
       await expect(page.locator('text=Schema Migration Compatibility')).toBeVisible();
@@ -254,7 +308,7 @@ test.describe('Responsive Layout & State Verification (Playwright Mocked Network
       // Verify Audience Summaries tab (default view is Internal Technical)
       await page.click('button[role="tab"]:has-text("Summaries")');
       await expect(page.locator('text=Duplicate payment processing webhooks').first()).toBeVisible();
-      await expect(page.locator('text=DRAFT').first()).toBeVisible();
+      await expect(page.locator('[role="status"]:has-text("DRAFT")').first()).toBeVisible();
 
       // Switch to Client tab and verify client-facing statement
       await page.click('button[role="tab"]:has-text("Client / Non-Tech")');

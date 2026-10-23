@@ -9,13 +9,9 @@ import AnalysisTab, { StepKey, StepProgressState } from '@/components/AnalysisTa
 import SummariesTab from '@/components/SummariesTab';
 import CompareTab from '@/components/CompareTab';
 import FinalBriefTab from '@/components/FinalBriefTab';
+import ReleaseTabs, { ReleaseTabKey } from '@/components/ReleaseTabs';
 import {
-  FileText,
-  CheckSquare,
   Sparkles,
-  MessageSquareQuote,
-  GitCompare,
-  FileCheck,
   ArrowLeft,
   Loader2,
 } from 'lucide-react';
@@ -429,8 +425,8 @@ export default function ReleaseDetailPage() {
 
       <main className="max-w-7xl mx-auto px-4 lg:px-8 pt-6 space-y-6">
         {/* Top Breadcrumb & Title Bar */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div className="space-y-1">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4">
+          <div className="space-y-1 min-w-0 max-w-full">
             <button
               onClick={() => router.push('/')}
               className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors focus-visible:ring-2 focus-visible:ring-sky-500 rounded"
@@ -439,20 +435,22 @@ export default function ReleaseDetailPage() {
               <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" /> Back to Dashboard
             </button>
 
-            <h1 className="text-xl lg:text-2xl font-extrabold text-white tracking-tight flex items-center gap-3 flex-wrap">
-              <span>{releaseName}</span>
-              <span className="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20">
+            <h1 className="text-lg sm:text-xl lg:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2 sm:gap-3 flex-wrap">
+              <span className="truncate max-w-[220px] sm:max-w-none" title={releaseName}>
+                {releaseName}
+              </span>
+              <span className="text-[11px] sm:text-xs font-mono font-bold px-2 sm:px-2.5 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20 shrink-0">
                 {versionLabel} (v{currentVersionNum})
               </span>
             </h1>
           </div>
 
           {/* Action Trigger Buttons */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
             <button
               onClick={handleRunWholeWorkflow}
               disabled={analyzing}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/20 disabled:opacity-50 transition-all focus-visible:ring-2 focus-visible:ring-indigo-400"
+              className="flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-600/20 disabled:opacity-50 transition-all focus-visible:ring-2 focus-visible:ring-indigo-400 w-full sm:w-auto"
               aria-label={analyzing ? 'Analysis currently in progress' : 'Run full multi-step AI analysis'}
             >
               <Sparkles className={`w-4 h-4 ${analyzing ? 'animate-spin' : ''}`} aria-hidden="true" />
@@ -470,90 +468,14 @@ export default function ReleaseDetailPage() {
           </div>
         )}
 
-        {/* 6 Navigation Tabs */}
-        <div
-          role="tablist"
-          aria-label="Release management sections"
-          className="flex items-center gap-1.5 overflow-x-auto pb-2 border-b border-slate-800"
-        >
-          <button
-            role="tab"
-            aria-selected={activeTab === 'package'}
-            onClick={() => setActiveTab('package')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-sky-500 ${
-              activeTab === 'package'
-                ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20'
-                : 'text-slate-400 hover:text-white hover:bg-slate-900'
-            }`}
-          >
-            <FileText className="w-4 h-4" aria-hidden="true" /> Package Form
-          </button>
-
-          <button
-            role="tab"
-            aria-selected={activeTab === 'checks'}
-            onClick={() => setActiveTab('checks')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-sky-500 ${
-              activeTab === 'checks'
-                ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20'
-                : 'text-slate-400 hover:text-white hover:bg-slate-900'
-            }`}
-          >
-            <CheckSquare className="w-4 h-4" aria-hidden="true" /> Checks ({checks.length})
-          </button>
-
-          <button
-            role="tab"
-            aria-selected={activeTab === 'analysis'}
-            onClick={() => setActiveTab('analysis')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-sky-500 ${
-              activeTab === 'analysis'
-                ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20'
-                : 'text-slate-400 hover:text-white hover:bg-slate-900'
-            }`}
-          >
-            <Sparkles className="w-4 h-4" aria-hidden="true" /> AI Analysis
-          </button>
-
-          <button
-            role="tab"
-            aria-selected={activeTab === 'summaries'}
-            onClick={() => setActiveTab('summaries')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-sky-500 ${
-              activeTab === 'summaries'
-                ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20'
-                : 'text-slate-400 hover:text-white hover:bg-slate-900'
-            }`}
-          >
-            <MessageSquareQuote className="w-4 h-4" aria-hidden="true" /> Summaries ({statements.length})
-          </button>
-
-          <button
-            role="tab"
-            aria-selected={activeTab === 'compare'}
-            onClick={() => setActiveTab('compare')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-sky-500 ${
-              activeTab === 'compare'
-                ? 'bg-sky-600 text-white shadow-md shadow-sky-600/20'
-                : 'text-slate-400 hover:text-white hover:bg-slate-900'
-            }`}
-          >
-            <GitCompare className="w-4 h-4" aria-hidden="true" /> Versions / Compare ({totalVersionsCount})
-          </button>
-
-          <button
-            role="tab"
-            aria-selected={activeTab === 'brief'}
-            onClick={() => setActiveTab('brief')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-              activeTab === 'brief'
-                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20'
-                : 'text-slate-400 hover:text-white hover:bg-slate-900'
-            }`}
-          >
-            <FileCheck className="w-4 h-4" aria-hidden="true" /> Final Brief
-          </button>
-        </div>
+        {/* 6 Navigation Tabs with Scroll-Snap, Edge-Fade & Keyboard Navigation */}
+        <ReleaseTabs
+          activeTab={activeTab as ReleaseTabKey}
+          onTabChange={(tabKey) => setActiveTab(tabKey)}
+          checksCount={checks.length}
+          statementsCount={statements.length}
+          versionsCount={totalVersionsCount}
+        />
 
         {/* Tab Content Display */}
         <div className="pt-2">
