@@ -127,7 +127,8 @@ describe('AI Engineering Resilience: Defensive Parsing, Retry/Repair & Token Bou
 
     expect(callCount).toBe(2);
     expect(promptsSent[0]).toBe('Original Prompt Instruction');
-    // Attempt 2 contains repair instruction and error summary
+    // Attempt 2 contains original prompt, repair instruction and error summary
+    expect(promptsSent[1]).toContain('Original Prompt Instruction');
     expect(promptsSent[1]).toContain('[SYSTEM INSTRUCTION: PREVIOUS OUTPUT VALIDATION FAILED]');
     expect(promptsSent[1]).toContain('itemsCount');
     expect(result.data.status).toBe('repaired');
@@ -289,5 +290,230 @@ describe('AI Engineering Resilience: Defensive Parsing, Retry/Repair & Token Bou
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('a call that times out (abort) with attempts and deadline remaining is retried and succeeds on the next attempt', async () => {
+    let callCount = 0;
+    let currentTime = 1000;
+    const sleeps: number[] = [];
+
+    const mockGenerate = vi.fn().mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        const abortErr = new Error('The operation was aborted');
+        abortErr.name = 'AbortError';
+        throw abortErr;
+      }
+      return {
+        text: JSON.stringify({ status: 'succeeded_after_timeout', itemsCount: 7 }),
+        usageMetadata: { promptTokenCount: 150, candidatesTokenCount: 50, totalTokenCount: 200 },
+      };
+    });
+
+    const mockSleep = vi.fn().mockImplementation(async (ms: number) => {
+      sleeps.push(ms);
+      currentTime += ms;
+    });
+
+    const result = await runLlmJson(
+      'timeout retry prompt',
+      SimpleSchema,
+      'STEP_TIMEOUT_RETRY',
+      {
+        generate: mockGenerate,
+        sleep: mockSleep,
+        now: () => currentTime,
+        random: () => 0,
+      },
+      {
+        maxAttempts: 3,
+        callTimeoutMs: 2000,
+        stepDeadlineMs: 30000,
+        retryBaseMs: 300,
+      }
+    );
+
+    expect(callCount).toBe(2);
+    expect(sleeps.length).toBe(1);
+    expect(result.data.status).toBe('succeeded_after_timeout');
+    expect(result.attempts).toBe(2);
+  });
+
+  it('truncated JSON output (cut off mid-object when output-token cap is hit) triggers the repair path and succeeds on next attempt', async () => {
+    let callCount = 0;
+    const promptsSent: string[] = [];
+
+    const mockGenerate = vi.fn().mockImplementation(async (p: string) => {
+      callCount++;
+      promptsSent.push(p);
+      if (callCount === 1) {
+        // Truncated JSON output cut off mid-object
+        return {
+          text: '{"status":"ok", "itemsCount":',
+        };
+      }
+      return {
+        text: JSON.stringify({ status: 'completed_after_truncation', itemsCount: 42 }),
+      };
+    });
+
+    const result = await runLlmJson(
+      'Original Truncation Test Prompt',
+      SimpleSchema,
+      'STEP_TRUNCATE_REPAIR',
+      {
+        generate: mockGenerate,
+      },
+      {
+        maxAttempts: 3,
+        maxRepairAttempts: 2,
+      }
+    );
+
+    expect(callCount).toBe(2);
+    expect(promptsSent[0]).toBe('Original Truncation Test Prompt');
+    expect(promptsSent[1]).toContain('[SYSTEM INSTRUCTION: PREVIOUS OUTPUT VALIDATION FAILED]');
+    expect(result.data.status).toBe('completed_after_truncation');
+    expect(result.data.itemsCount).toBe(42);
+    expect(result.attempts).toBe(2);
+  });
+
+  it('transient errors (429/503) back off with increasing delays that never exceed LLM_RETRY_MAX_MS and never sleep past deadline', async () => {
+    let callCount = 0;
+    const sleeps: number[] = [];
+    let currentTime = 1000;
+
+    const mockGenerate = vi.fn().mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        throw new Error('429 Rate Limit Exceeded: quota exhausted');
+      }
+      if (callCount === 2) {
+        throw new Error('503 Service Unavailable: server overloaded');
+      }
+      if (callCount === 3) {
+        throw new Error('503 Service Unavailable: transient blip');
+      }
+      return {
+        text: JSON.stringify({ status: 'multi_backoff_success', itemsCount: 8 }),
+        usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50, totalTokenCount: 150 },
+      };
+    });
+
+    const mockSleep = vi.fn().mockImplementation(async (ms: number) => {
+      sleeps.push(ms);
+      currentTime += ms;
+    });
+
+    const result = await runLlmJson(
+      'multi backoff test prompt',
+      SimpleSchema,
+      'STEP_MULTI_BACKOFF',
+      {
+        generate: mockGenerate,
+        sleep: mockSleep,
+        now: () => currentTime,
+        random: () => 0.5, // seeded deterministic random
+      },
+      {
+        maxAttempts: 4,
+        retryBaseMs: 100,
+        retryMaxMs: 250, // cap at 250ms
+        stepDeadlineMs: 60000,
+      }
+    );
+
+    expect(callCount).toBe(4);
+    expect(sleeps.length).toBe(3);
+
+    // Attempt 1 backoff: 100 * 2^0 = 100. Jitter: 0.5 * min(100*0.25, 500) = 12.5 -> round: 113ms
+    expect(sleeps[0]).toBe(113);
+
+    // Attempt 2 backoff: 100 * 2^1 = 200. Jitter: 0.5 * min(200*0.25, 500) = 25 -> round: 225ms
+    expect(sleeps[1]).toBe(225);
+
+    // Increasing delay: sleeps[1] > sleeps[0]
+    expect(sleeps[1]).toBeGreaterThan(sleeps[0]);
+
+    // Attempt 3 backoff: 100 * 2^2 = 400 + jitter -> capped strictly at retryMaxMs (250ms)!
+    expect(sleeps[2]).toBe(250);
+    expect(sleeps[2]).toBeLessThanOrEqual(250);
+
+    expect(result.data.status).toBe('multi_backoff_success');
+  });
+
+  it('non-retryable errors (auth/invalid request) make exactly one generate call', async () => {
+    // 1. Auth error (401)
+    let authCalls = 0;
+    const authGenerate = vi.fn().mockImplementation(async () => {
+      authCalls++;
+      throw new Error('401 API_KEY_INVALID: User not authenticated');
+    });
+
+    await expect(
+      runLlmJson('prompt', SimpleSchema, 'STEP_AUTH_TEST', { generate: authGenerate })
+    ).rejects.toThrow(LlmError);
+    expect(authCalls).toBe(1);
+
+    // 2. Invalid request error (400)
+    let invalidReqCalls = 0;
+    const invalidReqGenerate = vi.fn().mockImplementation(async () => {
+      invalidReqCalls++;
+      throw new Error('400 Invalid Argument: Request payload malformed');
+    });
+
+    await expect(
+      runLlmJson('prompt', SimpleSchema, 'STEP_INVALID_REQ_TEST', { generate: invalidReqGenerate })
+    ).rejects.toThrow(LlmError);
+    expect(invalidReqCalls).toBe(1);
+  });
+
+  it('usageMetadata including thoughtsTokenCount is included in total cost and persisted via step route tokensUsed', async () => {
+    vi.spyOn(prisma.releaseVersion, 'findUnique').mockResolvedValue({
+      id: 'ver-telemetry-1',
+      packageSnapshot: JSON.stringify(SAMPLE_RELEASE_PACKAGE),
+    } as any);
+
+    vi.spyOn(prisma.aIClassification, 'deleteMany').mockResolvedValue({ count: 0 });
+    vi.spyOn(prisma.aIClassification, 'createMany').mockResolvedValue({ count: 2 });
+    const createRunSpy = vi.spyOn(prisma.analysisRun, 'create').mockResolvedValue({ id: 'run-1' } as any);
+
+    // Verify calculateLlmCost bills thoughts tokens as output
+    const usageWithThoughts = {
+      promptTokens: 1000,
+      candidatesTokens: 300,
+      totalTokens: 1450,
+      thoughtsTokens: 150,
+    };
+    const cost = calculateLlmCost(usageWithThoughts, {
+      priceInputPerM: 0.30,
+      priceOutputPerM: 2.50,
+    });
+    // Input: 1000 * 0.30 / 1e6 = 0.0003
+    // Output: (300 + 150) * 2.50 / 1e6 = 0.001125
+    // Total: 0.001425
+    expect(cost.estimatedCostUsd).toBe(0.001425);
+    expect(cost.breakdown.inputCostUsd).toBe(0.0003);
+    expect(cost.breakdown.outputCostUsd).toBe(0.001125);
+
+    // Call Step A route under fixture mode and verify persistence
+    const req = new NextRequest('http://localhost:3000/api/releases/rel-1/versions/ver-telemetry-1/analyze/step-a', {
+      method: 'POST',
+    });
+
+    const res = await stepAHandler(req, { params: { id: 'rel-1', versionId: 'ver-telemetry-1' } });
+    expect(res.status).toBe(200);
+
+    const json = await res.json();
+    expect(json.success).toBe(true);
+    expect(json.tokensUsed).toBeGreaterThan(0);
+
+    // Assert tokensUsed was persisted to Prisma AnalysisRun
+    expect(createRunSpy).toHaveBeenCalledTimes(1);
+    const runPayload = createRunSpy.mock.calls[0]?.[0]?.data;
+    expect(runPayload?.tokensUsed).toBe(json.tokensUsed);
+    expect(runPayload?.status).toBe('COMPLETED');
+
+    vi.restoreAllMocks();
   });
 });

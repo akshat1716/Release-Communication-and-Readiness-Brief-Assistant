@@ -71,6 +71,7 @@ export interface CallGeminiJsonResult<T> {
   data: T;
   latencyMs: number;
   model: string;
+  attempts?: number;
   tokensUsed?: number;
   estimatedCostUsd?: number;
   costDetails?: CostEstimateResult;
@@ -154,6 +155,7 @@ export async function callGeminiJson<T>(
       data: runnerRes.data,
       latencyMs: runnerRes.latencyMs,
       model: modelName,
+      attempts: runnerRes.attempts,
       tokensUsed: runnerRes.usage.totalTokens,
       estimatedCostUsd: runnerRes.costEstimate.estimatedCostUsd,
       costDetails: runnerRes.costEstimate,
