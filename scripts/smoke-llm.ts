@@ -1,114 +1,149 @@
-import { runStepA, runStepB, runStepC, runStepD } from '../lib/llm';
-import { SAMPLE_RELEASE_PACKAGE } from '../lib/fixtures/sample-release';
-import { StepAOutputSchema, StepBOutputSchema, StepCOutputSchema, StepDOutputSchema } from '../lib/llm/schemas';
-import { sanitizeCitations } from '../lib/llm/sanitizer';
+import { runStepA } from '../lib/llm';
+import { ReleasePackageData } from '../lib/types/release';
+import { StepAOutputSchema } from '../lib/llm/schemas';
+import { LlmError } from '../lib/llm/errors';
 
-async function runSmokeTest() {
-  console.log('====================================================');
-  console.log('       REAL GEMINI API SMOKE TEST RUNNER           ');
-  console.log('====================================================\n');
+/**
+ * Real Gemini API smoke verification script.
+ *
+ * Requirements:
+ * - Reads LLM_API_KEY strictly from the process environment (never from a file).
+ * - Makes ONE call through the application's runLlmJson pipeline.
+ * - Prints detailed telemetry: model, attempts, latency, token metrics (prompt, candidates,
+ *   thoughts, total), cost, schema validation status, and first 200 chars of output.
+ * - Supports --timeout-test mode (sets LLM_CALL_TIMEOUT_MS=1) verifying clean abort with
+ *   NETWORK_TIMEOUT or DEADLINE_EXCEEDED.
+ *
+ * Usage:
+ *   LLM_API_KEY="your-api-key" npm run smoke:llm
+ *   LLM_API_KEY="your-api-key" npm run smoke:llm -- --timeout-test
+ */
+async function main() {
+  const isTimeoutTest = process.argv.includes('--timeout-test');
 
-  // Explicitly force MOCK_LLM=false for real LLM API call
-  process.env.MOCK_LLM = 'false';
-
+  // Read LLM_API_KEY ONLY from process environment (never from a file)
   const apiKey = process.env.LLM_API_KEY;
-  if (!apiKey || apiKey.trim() === '' || apiKey === 'your_gemini_api_key_here') {
-    console.error('❌ ERROR: LLM_API_KEY is not set or contains placeholder value in .env.');
-    console.error('   Please set your real Gemini API key in .env (LLM_API_KEY="AIzaSy...") before running this script.');
+  if (!apiKey || apiKey.trim() === '' || apiKey.trim() === 'your_gemini_api_key_here') {
+    console.error('❌ ERROR: LLM_API_KEY environment variable is not set.');
+    console.error('Usage:');
+    console.error('  LLM_API_KEY="AIzaSy..." npm run smoke:llm');
+    console.error('  LLM_API_KEY="AIzaSy..." npm run smoke:llm -- --timeout-test');
     process.exit(1);
   }
 
-  console.log(`Model Configured: ${process.env.LLM_MODEL || 'gemini-2.5-flash'}`);
-  console.log(`Target Package: ${SAMPLE_RELEASE_PACKAGE.releaseName} (${SAMPLE_RELEASE_PACKAGE.versionLabel})\n`);
+  // Force real LLM call (disable mock mode)
+  process.env.MOCK_LLM = 'false';
 
-  try {
-    // Step A
-    console.log('--> Executing Step A: Change Impact Classifications...');
-    const startA = Date.now();
-    const resA = await runStepA(SAMPLE_RELEASE_PACKAGE);
-    const latencyA = Date.now() - startA;
-    StepAOutputSchema.parse(resA.data);
-    console.log(`    ✅ Step A Succeeded in ${latencyA}ms (Model: ${resA.model})`);
-    console.log(`       Classified Items: ${resA.data.classifications.length}`);
-    for (const cls of resA.data.classifications) {
-      console.log(`       - [${cls.itemId}] ${cls.impact}: ${cls.rationale}`);
-    }
-    console.log('');
+  // Build a tiny sample release package for the test call
+  const tinySampleRelease: ReleasePackageData = {
+    releaseName: 'Payment Gateway Edge Service',
+    versionLabel: 'v1.0.0-rc1',
+    features: [
+      {
+        id: 'F1',
+        category: 'FEATURE',
+        title: 'Instant SEPA Credit Transfer',
+        description: 'Enables sub-10s euro settlements with automated IBAN routing validation.',
+      },
+    ],
+    bugFixes: [
+      {
+        id: 'B1',
+        category: 'BUGFIX',
+        title: 'Fix Webhook Idempotency Race',
+        description: 'Resolves duplicate callback invocations under distributed Redis lock contention.',
+      },
+    ],
+    changedBehaviours: [],
+    qaSummaries: [
+      {
+        id: 'QA1',
+        category: 'QA',
+        title: 'Payment Gateway Concurrency Test',
+        description: 'Passed 10,000 TPS load test with 0 duplicate charge events in staging.',
+      },
+    ],
+    knownLimitations: [],
+    migrationNotes: [],
+    affectedUserGroups: [
+      {
+        id: 'U1',
+        category: 'USER_GROUP',
+        title: 'European Retail Clients',
+        description: 'Retail clients initiating SEPA transfer payments.',
+      },
+    ],
+  };
 
-    // Step B
-    console.log('--> Executing Step B: Missing Information & Operational Gaps...');
-    const startB = Date.now();
-    const resB = await runStepB(SAMPLE_RELEASE_PACKAGE);
-    const latencyB = Date.now() - startB;
-    StepBOutputSchema.parse(resB.data);
-    console.log(`    ✅ Step B Succeeded in ${latencyB}ms (Model: ${resB.model})`);
-    console.log(`       Gaps Identified: ${resB.data.missingInfos.length}`);
-    for (const gap of resB.data.missingInfos) {
-      console.log(`       - [${gap.category}] ${gap.description}`);
-    }
-    console.log('');
+  if (isTimeoutTest) {
+    console.log('====================================================');
+    console.log('    GEMINI API SMOKE TEST: TIMEOUT ABORT MODE      ');
+    console.log('====================================================\n');
+    console.log('Setting LLM_CALL_TIMEOUT_MS=1 to verify request abort enforcement...\n');
 
-    // Step C
-    console.log('--> Executing Step C: QA Claim Support Verification...');
-    const startC = Date.now();
-    const resC = await runStepC(SAMPLE_RELEASE_PACKAGE);
-    const latencyC = Date.now() - startC;
-    StepCOutputSchema.parse(resC.data);
-    console.log(`    ✅ Step C Succeeded in ${latencyC}ms (Model: ${resC.model})`);
-    console.log(`       Claims Verified: ${resC.data.verifications.length}`);
-    for (const ver of resC.data.verifications) {
-      console.log(`       - [${ver.itemId}] Status: ${ver.status} | Reason: ${ver.reason}`);
-    }
-    console.log('');
+    process.env.LLM_CALL_TIMEOUT_MS = '1';
 
-    // Step D
-    console.log('--> Executing Step D: Audience Summaries & Risk Matrix...');
-    const startD = Date.now();
-    const resD = await runStepD(SAMPLE_RELEASE_PACKAGE);
-    const latencyD = Date.now() - startD;
-    StepDOutputSchema.parse(resD.data);
-    console.log(`    ✅ Step D Succeeded in ${latencyD}ms (Model: ${resD.model})`);
-    console.log(`       Internal Statements: ${resD.data.internalStatements.length}`);
-    console.log(`       Client Statements: ${resD.data.clientStatements.length}`);
-    console.log(`       Risks Flagged: ${resD.data.risksAndLimitations.length}`);
+    try {
+      await runStepA(tinySampleRelease);
+      console.error('❌ FAILURE: Expected LLM call to abort with timeout, but call resolved successfully.');
+      process.exit(1);
+    } catch (err: unknown) {
+      if (err instanceof LlmError) {
+        const isExpectedCode = err.code === 'NETWORK_TIMEOUT' || err.code === 'DEADLINE_EXCEEDED';
+        console.log(`Call Aborted:              YES`);
+        console.log(`Caught Error Code:         ${err.code} ${isExpectedCode ? '✅' : '❌'}`);
+        console.log(`Error Message:             ${err.message}`);
+        console.log(`HTTP Status:               ${err.statusCode}`);
+        console.log(`Retryable:                 ${err.retryable}`);
+        console.log(`Attempts Made:             ${err.attempts}`);
 
-    // Citation Sanitizer Inspection
-    console.log('\n--> Citation Sanitizer Audit on Step D Output:');
-    const allItems = [
-      ...SAMPLE_RELEASE_PACKAGE.features,
-      ...SAMPLE_RELEASE_PACKAGE.bugFixes,
-      ...SAMPLE_RELEASE_PACKAGE.changedBehaviours,
-      ...SAMPLE_RELEASE_PACKAGE.qaSummaries,
-      ...SAMPLE_RELEASE_PACKAGE.knownLimitations,
-      ...SAMPLE_RELEASE_PACKAGE.migrationNotes,
-      ...SAMPLE_RELEASE_PACKAGE.affectedUserGroups,
-    ];
-
-    let totalStrippedCount = 0;
-    const checkStmts = [...resD.data.internalStatements, ...resD.data.clientStatements];
-    for (const stmt of checkStmts) {
-      const sanitized = sanitizeCitations(stmt.citations, allItems);
-      if (sanitized.sanitized) {
-        totalStrippedCount += sanitized.invalidCitations.length;
-        console.log(`    ⚠️ Sanitized statement: "${stmt.text.substring(0, 40)}..."`);
-        console.log(`       Stripped Invalid Citation IDs: ${sanitized.invalidCitations.join(', ')}`);
-        console.log(`       Preserved Valid Citation IDs: ${sanitized.validCitations.join(', ')}`);
+        if (isExpectedCode) {
+          console.log('\n✅ TIMEOUT ABORT VERIFICATION PASSED');
+          process.exit(0);
+        } else {
+          console.error(`\n❌ UNEXPECTED ERROR CODE: Expected NETWORK_TIMEOUT or DEADLINE_EXCEEDED, got ${err.code}`);
+          process.exit(1);
+        }
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`\n❌ UNEXPECTED NON-LLM ERROR: ${message}`);
+        process.exit(1);
       }
     }
+  }
 
-    if (totalStrippedCount === 0) {
-      console.log('    ✅ All statement citations were 100% valid. Zero hallucinated IDs stripped.');
+  console.log('====================================================');
+  console.log('       REAL GEMINI API SMOKE TEST (1 CALL)          ');
+  console.log('====================================================\n');
+
+  try {
+    const res = await runStepA(tinySampleRelease);
+
+    // Validate structured JSON response against schema
+    const parseResult = StepAOutputSchema.safeParse(res.data);
+    const jsonStr = JSON.stringify(res.data);
+    const first200 = jsonStr.length > 200 ? jsonStr.substring(0, 200) + '...' : jsonStr;
+
+    console.log(`Model Name:                ${res.model}`);
+    console.log(`Attempts:                  ${res.attempts ?? 1}`);
+    console.log(`Latency:                   ${res.latencyMs} ms`);
+    console.log(`Prompt Tokens:             ${res.usage?.promptTokens ?? 'N/A'}`);
+    console.log(`Candidates Tokens:         ${res.usage?.candidatesTokens ?? 'N/A'}`);
+    console.log(`Thoughts Tokens:           ${res.usage?.thoughtsTokens ?? 0}`);
+    console.log(`Total Tokens:              ${res.tokensUsed ?? res.usage?.totalTokens ?? 'N/A'}`);
+    console.log(`Estimated Cost:            $${(res.estimatedCostUsd ?? 0).toFixed(6)} USD`);
+    console.log(`JSON Parsed & Validated:   ${parseResult.success ? 'YES ✅' : 'NO ❌'}`);
+    console.log(`Output Snippet (first 200 chars):`);
+    console.log(`  ${first200}\n`);
+
+    if (!parseResult.success) {
+      console.error('❌ Schema Validation Errors:', parseResult.error.format());
+      process.exit(1);
     }
 
-    console.log('\n====================================================');
-    console.log('               LATENCY SUMMARY                      ');
     console.log('====================================================');
-    console.log(`Step A (Classifications): ${latencyA} ms`);
-    console.log(`Step B (Missing Info):    ${latencyB} ms`);
-    console.log(`Step C (QA Claims):       ${latencyC} ms`);
-    console.log(`Step D (Summaries):       ${latencyD} ms`);
-    console.log(`Total Pipeline Latency:   ${latencyA + latencyB + latencyC + latencyD} ms`);
-    console.log('====================================================\n');
+    console.log('         SMOKE TEST VERIFICATION PASSED ✅         ');
+    console.log('====================================================');
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error('\n❌ SMOKE TEST FAILED WITH ERROR:');
@@ -117,4 +152,4 @@ async function runSmokeTest() {
   }
 }
 
-runSmokeTest();
+main();
